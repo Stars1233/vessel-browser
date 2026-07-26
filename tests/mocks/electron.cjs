@@ -65,11 +65,14 @@ function createMockWebContents() {
 function WebContentsView(opts) {
   const session = opts?.webPreferences?.session;
   this.webContents = createMockWebContents();
+  this._backgroundColor = undefined;
   if (session) {
     this.webContents.session = session;
   }
   this.setBounds = () => {};
-  this.setBackgroundColor = () => {};
+  this.setBackgroundColor = (color) => {
+    this._backgroundColor = color;
+  };
 }
 
 function createMockSession() {

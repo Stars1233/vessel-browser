@@ -336,7 +336,9 @@ export function createPrivateWindow(): PrivateWindowState {
         nodeIntegration: false,
       },
     });
-    chromeView.setBackgroundColor("#00000000");
+    // The chrome fills its entire view. Keeping this surface opaque avoids
+    // alpha-composited toolbar layers trailing the native window on Wayland.
+    chromeView.setBackgroundColor("#1a1a1e");
     win.contentView.addChildView(chromeView);
 
     tabManager = new TabManager(

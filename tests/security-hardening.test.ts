@@ -50,6 +50,7 @@ import {
   getPrivateWindows,
   openPrivateWindowSafely,
 } from "../src/main/private/window";
+import { createSecondaryWindow } from "../src/main/secondary/window";
 import { sanitizeTelemetryProperties } from "../src/main/telemetry/posthog";
 import {
   decodeEncryptionKeyFromStorage,
@@ -206,6 +207,11 @@ test("private window launch succeeds with scoped chrome IPC", () => {
     (privateWindow) => !existingWindows.has(privateWindow),
   );
   assert.ok(openedWindow);
+  assert.equal(
+    (openedWindow.chromeView as unknown as { _backgroundColor?: string })
+      ._backgroundColor,
+    "#1a1a1e",
+  );
   assert.throws(
     () =>
       assertTrustedIpcSender({
@@ -226,6 +232,18 @@ test("private window launch succeeds with scoped chrome IPC", () => {
 
   openedWindow.window.close();
   assert.equal(getPrivateWindows().size, beforeCount);
+});
+
+test("secondary windows use an opaque chrome surface", () => {
+  const secondaryWindow = createSecondaryWindow();
+
+  assert.equal(
+    (secondaryWindow.chromeView as unknown as { _backgroundColor?: string })
+      ._backgroundColor,
+    "#1a1a1e",
+  );
+
+  secondaryWindow.window.close();
 });
 
 test("private window shutdown does not lay out destroyed views", () => {
