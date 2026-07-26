@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { PageType } from "../ai/context-builder";
+import { TAB_GROUP_COLORS } from "../../shared/types";
 import {
   normalizedOptionalStringSchema,
   optionalNumberLikeSchema,
@@ -81,10 +82,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         .optional()
         .describe("Tab ID to group (defaults to active tab)"),
       name: z.string().optional().describe("Optional group name"),
-      color: z
-        .enum(["blue", "green", "yellow", "orange", "red", "purple", "gray"])
-        .optional()
-        .describe("Optional group color"),
+      color: z.enum(TAB_GROUP_COLORS).optional().describe("Optional group color"),
     },
     tier: 2,
   },
@@ -129,9 +127,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Change the color of a tab group.",
     inputSchema: {
       groupId: z.string().describe("Group ID"),
-      color: z
-        .enum(["blue", "green", "yellow", "orange", "red", "purple", "gray"])
-        .describe("New color"),
+      color: z.enum(TAB_GROUP_COLORS).describe("New color"),
     },
     tier: 2,
   },

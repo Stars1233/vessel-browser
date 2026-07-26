@@ -7,11 +7,13 @@ let encryptionAvailable = true;
 function createMockWebContents() {
   wcId += 1;
   let zoom = 0;
+  let destroyed = false;
+  let destroyedListener;
   const ipcHandlers = new Map();
   const ipcListeners = new Map();
   return {
     id: wcId,
-    isDestroyed: () => false,
+    isDestroyed: () => destroyed,
     getURL: () => "about:blank",
     getTitle: () => "New Tab",
     session: {
@@ -29,11 +31,19 @@ function createMockWebContents() {
     executeJavaScript: () => Promise.resolve({}),
     setWindowOpenHandler: () => {},
     on: () => {},
-    once: (_event, listener) => {
-      if (typeof listener === "function") listener();
+    once: (event, listener) => {
+      if (event === "destroyed") {
+        destroyedListener = listener;
+      } else if (typeof listener === "function") {
+        listener();
+      }
     },
     removeListener: () => {},
-    close: () => {},
+    close: () => {
+      if (destroyed) return;
+      destroyed = true;
+      destroyedListener?.();
+    },
     copy: () => {},
     paste: () => {},
     cut: () => {},
@@ -55,11 +65,14 @@ function createMockWebContents() {
 function WebContentsView(opts) {
   const session = opts?.webPreferences?.session;
   this.webContents = createMockWebContents();
+  this._backgroundColor = undefined;
   if (session) {
     this.webContents.session = session;
   }
   this.setBounds = () => {};
-  this.setBackgroundColor = () => {};
+  this.setBackgroundColor = (color) => {
+    this._backgroundColor = color;
+  };
 }
 
 function createMockSession() {
@@ -128,15 +141,20 @@ module.exports = {
     constructor() {
       this.contentView = { addChildView: () => {}, removeChildView: () => {} };
       this._listeners = new Map();
+      this._destroyed = false;
     }
     getContentSize() { return [1280, 800]; }
     on(event, listener) { this._listeners.set(event, listener); }
     show() { this._listeners.get("show")?.(); }
-    close() { this._listeners.get("closed")?.(); }
+    close() {
+      this._destroyed = true;
+      this._listeners.get("closed")?.();
+    }
     minimize() {}
     maximize() {}
     unmaximize() {}
     isMaximized() { return false; }
+    isDestroyed() { return this._destroyed; }
   },
   WebContentsView,
   clipboard: { writeText: () => {} },

@@ -15,6 +15,14 @@ routes = [
 id = "<ACTIVATION_KV_NAMESPACE_ID>"
 binding = "ACTIVATION_KV"
 
+[[durable_objects.bindings]]
+name = "ACTIVATION_GUARD"
+class_name = "ActivationAttemptGuard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "ActivationAttemptGuard" ]
+
 [observability]
 enabled = true
 

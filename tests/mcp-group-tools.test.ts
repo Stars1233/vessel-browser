@@ -7,6 +7,7 @@ import { z, type ZodType } from "zod";
 import { registerGroupTools } from "../src/main/mcp/tools/groups";
 import type { AgentRuntime } from "../src/main/agent/runtime";
 import type { TabGroup, TabManager } from "../src/main/tabs/tab-manager";
+import { TOOL_DEFINITIONS } from "../src/main/tools/definitions";
 import { TAB_GROUP_COLORS, type TabGroupColor } from "../src/shared/types";
 
 type TextResponse = {
@@ -111,6 +112,13 @@ test("MCP group color schemas use the shared tab group palette", () => {
     }
 
     assert.throws(() => colorSchema.parse("chartreuse"), /Invalid tab group color/);
+  }
+
+  for (const toolName of ["create_group", "set_group_color"]) {
+    const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === toolName);
+    const colorSchema = definition?.inputSchema?.color;
+    assert.ok(colorSchema);
+    assert.deepEqual(z.toJSONSchema(colorSchema).enum, TAB_GROUP_COLORS);
   }
 });
 
