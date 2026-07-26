@@ -255,7 +255,7 @@ const SettingsVaults: Component<SettingsVaultsProps> = (props) => {
                 onInput={(e) => h.setNewPassword(e.currentTarget.value)}
               />
               <select
-                class="settings-input"
+                class="settings-input settings-select"
                 value={h.newCategory()}
                 onChange={(e) =>
                   h.setNewCategory(e.currentTarget.value)
