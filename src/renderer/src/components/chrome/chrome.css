@@ -535,8 +535,7 @@
     color: var(--text-muted);
     transition:
         background var(--duration-fast) var(--ease-in-out),
-        color var(--duration-fast) var(--ease-in-out),
-        transform var(--duration-fast) var(--ease-out-expo);
+        color var(--duration-fast) var(--ease-in-out);
 }
 
 .nav-btn:hover:not(:disabled) {
@@ -545,7 +544,7 @@
 }
 
 .nav-btn:active:not(:disabled) {
-    transform: scale(0.9);
+    background: var(--surface-active);
 }
 
 .nav-btn-muted {
@@ -764,12 +763,7 @@
 
 .nav-btn-sidebar.has-approvals {
     color: var(--accent-warm);
-    animation: approval-attention 2s ease-in-out infinite;
-}
-
-@keyframes approval-attention {
-    0%, 100% { color: var(--accent-warm); }
-    50% { color: var(--text-primary); }
+    background: color-mix(in srgb, var(--accent-warm) 10%, transparent);
 }
 
 .nav-btn-badge {
