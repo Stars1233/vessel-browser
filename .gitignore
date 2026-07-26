@@ -54,56 +54,30 @@ docs/superpowers/specs/2026-03-28-linux-app-store-distribution-design.md
 docs/superpowers/specs/2026-04-01-premium-conversion-optimization-design.md
 
 # Tests (local overrides)
-# Keep committed tests tracked, but hide local/untracked test experiments by default.
-# Force-add intentional new top-level tests with: git add -f tests/name.test.ts
-tests/*.test.ts
-!tests/ad-blocking-rules.test.ts
-!tests/agent-runtime.test.ts
-!tests/agent-activity.test.ts
-!tests/ai-activity.test.ts
-!tests/ai-busy-handshake.test.ts
-!tests/ai-queue.test.ts
-!tests/automation-kit-constants.test.ts
-!tests/bookmark-context.test.ts
-!tests/bookmark-page-source.test.ts
-!tests/browser-qol-refactors.test.ts
-!tests/click-targets.test.ts
-!tests/cloudflare-premium-worker.test.ts
-!tests/channel-contract.test.ts
-!tests/dom-selectors.test.ts
-!tests/devtools-page-map-reveal.test.ts
-!tests/devtools-panel-capture.test.ts
-!tests/fillable-controls.test.ts
-!tests/highlight-actions.test.ts
-!tests/input-coercion.test.ts
-!tests/link-validation.test.ts
-!tests/mcp-group-tools.test.ts
-!tests/mcp-route-parity.test.ts
-!tests/overlay-context.test.ts
-!tests/page-access-issues.test.ts
-!tests/page-diff-display.test.ts
-!tests/page-url.test.ts
-!tests/prompt-cache.test.ts
-!tests/provider.test.ts
-!tests/provider-openai-tools.test.ts
-!tests/provider-codex-clear-overlay.test.ts
-!tests/provider-codex-dedup.test.ts
-!tests/provider-codex-no-terminate.test.ts
-!tests/provider-codex-recovery.test.ts
-!tests/provider-codex-strike-reset.test.ts
-!tests/results-only-context.test.ts
-!tests/research-clarification-tool.test.ts
-!tests/research-quick-replies.test.ts
-!tests/safe-fs.test.ts
-!tests/scheduler.test.ts
-!tests/search-shortcuts.test.ts
-!tests/semantic-snapshots.test.ts
-!tests/security-hardening.test.ts
-!tests/settings-ipc-security.test.ts
-!tests/structured-data.test.ts
-!tests/summary-context.test.ts
-!tests/tabs-ipc-contract.test.ts
-!tests/tool-guardrails.test.ts
+# Legacy local experiments are explicitly quarantined by
+# tests/local-only-tests.txt. New top-level tests remain visible to Git and run
+# automatically.
+tests/agent-prompt.test.ts
+tests/compact-context.test.ts
+tests/compact-listing.test.ts
+tests/compact-tool-result.test.ts
+tests/devtools-session.test.ts
+tests/markdown-renderer.test.ts
+tests/memory-obsidian.test.ts
+tests/page-actions-helpers.test.ts
+tests/page-diff-history.test.ts
+tests/persistence.test.ts
+tests/provider-openai-loop.test.ts
+tests/provider-openai.test.ts
+tests/sessions-manager.test.ts
+tests/task-tracker.test.ts
+tests/time-display.test.ts
+tests/tool-aliases.test.ts
+tests/tool-profile.test.ts
+tests/tool-pruner.test.ts
+tests/utils-webcontents.test.ts
+tests/vault-audit.test.ts
+tests/vault-shared.test.ts
 tests/local/
 tests/*.local.ts
 tests/*.scratch.ts
@@ -114,10 +88,7 @@ tests/*.scratch.ts
 # Local secrets / deployment config
 .webui_secret_key
 scripts/cloudflare-worker/wrangler.toml
-scripts/cloudflare-worker/vessel-premium-api.js
 
 # macOS Finder metadata
 .DS_Store
 .claude/plan.md
-scripts/cloudflare-worker/vessel-premium-api.js
-tests/cloudflare-premium-worker.test.ts

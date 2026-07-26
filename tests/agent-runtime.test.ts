@@ -124,12 +124,16 @@ test("advertised API group tools dispatch to tab group operations", async () => 
   ];
   const tabs = [{ id: "tab-1", title: "Docs", url: "https://example.test", groupId: "group-1" }];
   const colorChanges: Array<{ groupId: string; color: TabGroupColor }> = [];
+  const createdGroups: Array<{ tabId: string; color?: TabGroupColor }> = [];
   const tabManager = {
     getActiveTab: () => null,
     getActiveTabId: () => null,
     getGroups: () => groups,
     getAllStates: () => tabs,
-    createGroupFromTab: () => "group-created",
+    createGroupFromTab: (tabId: string, options?: { color?: TabGroupColor }) => {
+      createdGroups.push({ tabId, color: options?.color });
+      return "group-created";
+    },
     assignTabToGroup: () => undefined,
     removeTabFromGroup: () => undefined,
     toggleGroupCollapsed: () => false,
@@ -151,6 +155,15 @@ test("advertised API group tools dispatch to tab group operations", async () => 
     "Set group group-1 color to green",
   );
   assert.deepEqual(colorChanges, [{ groupId: "group-1", color: "green" }]);
+  assert.equal(
+    await executeAction(
+      "create_group",
+      { tabId: "tab-1", color: "chartreuse" },
+      { runtime, tabManager: tabManager as never },
+    ),
+    "Error: Invalid tab group color",
+  );
+  assert.deepEqual(createdGroups, []);
   assert.equal(
     await executeAction(
       "assign_to_group",

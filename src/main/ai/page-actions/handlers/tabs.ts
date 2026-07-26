@@ -114,10 +114,11 @@ export function handleCreateGroup(ctx: ActionContext, args: Record<string, unkno
       ? args.tabId.trim()
       : ctx.tabManager.getActiveTabId();
   if (!targetId) return "Error: No active tab";
-  const color =
-    typeof args.color === "string" && TAB_GROUP_COLORS.includes(args.color as TabGroupColor)
-      ? (args.color as TabGroupColor)
-      : undefined;
+  const requestedColor = typeof args.color === "string" ? args.color.trim() : "";
+  if (args.color != null && !TAB_GROUP_COLORS.includes(requestedColor as TabGroupColor)) {
+    return "Error: Invalid tab group color";
+  }
+  const color = requestedColor ? (requestedColor as TabGroupColor) : undefined;
   const groupId = ctx.tabManager.createGroupFromTab(targetId, {
     name: typeof args.name === "string" && args.name.trim() ? args.name.trim() : undefined,
     color,

@@ -1,0 +1,23 @@
+# Explicit quarantine for legacy local test experiments.
+# New tests run automatically unless they are intentionally added here.
+agent-prompt.test.ts
+compact-context.test.ts
+compact-listing.test.ts
+compact-tool-result.test.ts
+devtools-session.test.ts
+markdown-renderer.test.ts
+memory-obsidian.test.ts
+page-actions-helpers.test.ts
+page-diff-history.test.ts
+persistence.test.ts
+provider-openai-loop.test.ts
+provider-openai.test.ts
+sessions-manager.test.ts
+task-tracker.test.ts
+time-display.test.ts
+tool-aliases.test.ts
+tool-profile.test.ts
+tool-pruner.test.ts
+utils-webcontents.test.ts
+vault-audit.test.ts
+vault-shared.test.ts

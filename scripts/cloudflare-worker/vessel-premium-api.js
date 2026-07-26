@@ -22,11 +22,11 @@
  *   vessel_starter_monthly, vessel_plus_monthly, vessel_pro_monthly
  */
 
+export { ActivationAttemptGuard } from "./activation-attempt-guard.js";
+
 const STRIPE_API = "https://api.stripe.com/v1";
 const RESEND_API = "https://api.resend.com/emails";
 const ACTIVATION_CHALLENGE_TTL_MS = 15 * 60 * 1000;
-const ACTIVATION_CHALLENGE_TTL_SECONDS = Math.ceil(ACTIVATION_CHALLENGE_TTL_MS / 1000);
-const MAX_ACTIVATION_CODE_ATTEMPTS = 5;
 const PREMIUM_AUTH_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const CHECKOUT_REDEMPTION_TTL_SECONDS = Math.ceil(PREMIUM_AUTH_TTL_MS / 1000);
 const MAX_FEEDBACK_MESSAGE_LENGTH = 5000;
@@ -303,49 +303,67 @@ function planFromPlayProduct(productId) {
   return PLAY_PRODUCT_PLANS[String(productId || "").trim()] || "premium";
 }
 
-async function findCustomerByEmail(env, email) {
+async function findCustomersByEmail(env, email) {
   const normalizedEmail = normalizeEmail(email);
-  const data = await stripeRequest(
-    env,
-    "GET",
-    `/customers?email=${encodeURIComponent(normalizedEmail)}&limit=1`,
-  );
-  if (data.data?.[0]) {
-    logPremiumEvent("info", "stripe.customer.resolved", {
-      lookup: "exact_email",
-      customerId: data.data[0].id || "",
-    });
-    return data.data[0];
-  }
-
-  // Stripe Search is eventually consistent. Check the newest customers through
-  // the strongly consistent list API first so activation works right after checkout.
-  const recentData = await stripeRequest(env, "GET", "/customers?limit=100");
-  const recentCustomers = Array.isArray(recentData.data) ? recentData.data : [];
-  const recentCustomer = recentCustomers.find(
-    (customer) => normalizeEmail(customer?.email) === normalizedEmail,
-  );
-  if (recentCustomer) {
-    logPremiumEvent("info", "stripe.customer.resolved", {
-      lookup: "recent_case_insensitive",
-      customerId: recentCustomer.id || "",
-    });
-    return recentCustomer;
-  }
-
   const searchQuery = `email:'${escapeStripeSearchString(normalizedEmail)}'`;
-  const searchData = await stripeRequest(
-    env,
-    "GET",
-    `/customers/search?query=${encodeURIComponent(searchQuery)}&limit=1`,
+  const lookups = [
+    {
+      name: "exact_email",
+      path: `/customers?email=${encodeURIComponent(normalizedEmail)}&limit=100`,
+    },
+    {
+      name: "recent_case_insensitive",
+      path: "/customers?limit=100",
+    },
+    {
+      name: "stripe_search",
+      path: `/customers/search?query=${encodeURIComponent(searchQuery)}&limit=100`,
+    },
+  ];
+  const results = await Promise.allSettled(
+    lookups.map(({ path }) => stripeRequest(env, "GET", path)),
   );
-  const searchCustomer = searchData.data?.[0] || null;
-  logPremiumEvent("info", "stripe.customer.resolved", {
-    lookup: "stripe_search",
-    customerId: searchCustomer?.id || "",
-    found: Boolean(searchCustomer),
+
+  const customers = [];
+  const seen = new Set();
+  const lookupErrors = [];
+  const lookupSummary = {};
+  for (let index = 0; index < lookups.length; index += 1) {
+    const lookup = lookups[index];
+    const result = results[index];
+    if (result.status === "rejected") {
+      lookupErrors.push(result.reason);
+      lookupSummary[lookup.name] = { failed: true };
+      continue;
+    }
+
+    const candidates = Array.isArray(result.value.data) ? result.value.data : [];
+    lookupSummary[lookup.name] = {
+      candidateCount: candidates.length,
+      hasMore: Boolean(result.value.has_more),
+    };
+    for (const candidate of candidates) {
+      if (
+        !candidate?.id ||
+        seen.has(candidate.id) ||
+        normalizeEmail(candidate.email) !== normalizedEmail
+      ) {
+        continue;
+      }
+      seen.add(candidate.id);
+      customers.push(candidate);
+    }
+  }
+
+  logPremiumEvent("info", "stripe.customers.resolved", {
+    candidateCount: customers.length,
+    failedLookupCount: lookupErrors.length,
+    lookups: lookupSummary,
   });
-  return searchCustomer;
+  if (customers.length === 0 && lookupErrors.length > 0) {
+    throw lookupErrors[0];
+  }
+  return { customers, lookupErrors };
 }
 
 function escapeStripeSearchString(value) {
@@ -756,56 +774,64 @@ async function checkFeedbackSpamGuard(request, env) {
   return null;
 }
 
-async function consumeActivationAttempt(request, env, challengeToken) {
-  if (!env.ACTIVATION_KV) {
-    return {
-      response: missingKvResponse(request, env, "Premium email verification"),
-    };
+async function runActivationGuardAction(env, challengeToken, action, expiresAt) {
+  if (!env.ACTIVATION_GUARD) {
+    throw new Error("ACTIVATION_GUARD binding is not configured");
   }
+  const guard = env.ACTIVATION_GUARD.getByName(await sha256Hex(challengeToken));
+  const response = await guard.fetch("https://activation-guard.internal/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, expiresAt }),
+  });
+  if (!response.ok) {
+    throw new Error(`Activation attempt guard returned ${response.status}`);
+  }
+  return response.json();
+}
 
+function activationGuardBlockResponse(request, env, result) {
+  if (result.status === "redeemed") {
+    return corsResponse(
+      request,
+      env,
+      { error: "Code verification expired. Request a new code." },
+      403,
+    );
+  }
+  if (result.status === "limited") {
+    return corsResponse(
+      request,
+      env,
+      { error: "Too many verification attempts. Request a new code." },
+      429,
+    );
+  }
+  return null;
+}
+
+async function checkActivationAttemptGuard(request, env, challengeToken, expiresAt) {
   try {
-    const key = `activation-attempts:${await sha256Hex(challengeToken)}`;
-    const current = await env.ACTIVATION_KV.get(key);
-    if (current === "redeemed") {
-      return {
-        response: corsResponse(
-          request,
-          env,
-          { error: "Code verification expired. Request a new code." },
-          403,
-        ),
-      };
-    }
-
-    const attempts = Number(current);
-    const next = Number.isFinite(attempts) ? attempts + 1 : 1;
-    if (next > MAX_ACTIVATION_CODE_ATTEMPTS) {
-      return {
-        response: corsResponse(
-          request,
-          env,
-          { error: "Too many verification attempts. Request a new code." },
-          429,
-        ),
-      };
-    }
-
-    await env.ACTIVATION_KV.put(key, String(next), {
-      expirationTtl: ACTIVATION_CHALLENGE_TTL_SECONDS,
-    });
-    return { key };
+    const result = await runActivationGuardAction(env, challengeToken, "check", expiresAt);
+    return activationGuardBlockResponse(request, env, result);
   } catch (error) {
     console.warn("Activation attempt guard failed closed:", error);
-    return {
-      response: missingKvResponse(request, env, "Premium email verification"),
-    };
+    return missingKvResponse(request, env, "Premium email verification");
   }
 }
 
-async function markActivationChallengeRedeemed(env, key) {
-  await env.ACTIVATION_KV.put(key, "redeemed", {
-    expirationTtl: ACTIVATION_CHALLENGE_TTL_SECONDS,
-  });
+async function recordInvalidActivationAttempt(request, env, challengeToken, expiresAt) {
+  try {
+    const result = await runActivationGuardAction(env, challengeToken, "invalid", expiresAt);
+    return activationGuardBlockResponse(request, env, result);
+  } catch (error) {
+    console.warn("Activation attempt guard failed closed:", error);
+    return missingKvResponse(request, env, "Premium email verification");
+  }
+}
+
+async function markActivationChallengeRedeemed(env, challengeToken, expiresAt) {
+  await runActivationGuardAction(env, challengeToken, "redeem", expiresAt);
 }
 
 async function getCheckoutRedemptionKey(sessionId) {
@@ -951,34 +977,28 @@ async function buildEntitlementStatus(env, payload, status = "active", expiresAt
   };
 }
 
-async function buildPremiumStatus(env, customerId, fallbackEmail = "", preferredSubscription = null) {
-  if (!customerId) {
-    return {
-      status: "free",
-      customerId: "",
-      verificationToken: "",
-      email: fallbackEmail,
-      expiresAt: "",
-      plan: "free",
-      planLabel: PLAN_CONFIG.free.label,
-      source: "stripe",
-      usage: usageSummaryForPlan(emptyUsage(), "free"),
-    };
-  }
+function freePremiumStatus(fallbackEmail = "") {
+  return {
+    status: "free",
+    customerId: "",
+    verificationToken: "",
+    email: fallbackEmail,
+    expiresAt: "",
+    plan: "free",
+    planLabel: PLAN_CONFIG.free.label,
+    source: "stripe",
+    usage: usageSummaryForPlan(emptyUsage(), "free"),
+  };
+}
 
-  const customer = await stripeRequest(env, "GET", `/customers/${customerId}`);
-  if (customer.error) {
-    return {
-      status: "free",
-      customerId: "",
-      verificationToken: "",
-      email: fallbackEmail,
-      expiresAt: "",
-      plan: "free",
-      planLabel: PLAN_CONFIG.free.label,
-      source: "stripe",
-      usage: usageSummaryForPlan(emptyUsage(), "free"),
-    };
+async function buildPremiumStatusForCustomer(
+  env,
+  customer,
+  fallbackEmail = "",
+  preferredSubscription = null,
+) {
+  if (!customer?.id) {
+    return freePremiumStatus(fallbackEmail);
   }
 
   const subscription = preferredSubscription || await getSubscription(env, customer.id);
@@ -1007,6 +1027,56 @@ async function buildPremiumStatus(env, customerId, fallbackEmail = "", preferred
     source: "stripe",
     usage: usageSummaryForPlan(usage, plan),
   };
+}
+
+async function buildPremiumStatus(env, customerId, fallbackEmail = "", preferredSubscription = null) {
+  if (!customerId) {
+    return freePremiumStatus(fallbackEmail);
+  }
+
+  const customer = await stripeRequest(env, "GET", `/customers/${customerId}`);
+  if (customer.error) {
+    return freePremiumStatus(fallbackEmail);
+  }
+  return buildPremiumStatusForCustomer(env, customer, fallbackEmail, preferredSubscription);
+}
+
+function hasPremiumAccess(status) {
+  return status.status === "active" || status.status === "trialing";
+}
+
+function comparePremiumStatuses(left, right) {
+  const planDifference =
+    planConfig(right.plan).monthlyAiBudgetUsd - planConfig(left.plan).monthlyAiBudgetUsd;
+  if (planDifference !== 0) return planDifference;
+
+  const statusRank = { active: 2, trialing: 1 };
+  const statusDifference = (statusRank[right.status] || 0) - (statusRank[left.status] || 0);
+  if (statusDifference !== 0) return statusDifference;
+
+  const leftExpiry = Date.parse(left.expiresAt || "") || 0;
+  const rightExpiry = Date.parse(right.expiresAt || "") || 0;
+  return rightExpiry - leftExpiry;
+}
+
+async function buildBestPremiumStatusForEmail(env, customerResolution, email) {
+  const statusResults = await Promise.allSettled(
+    customerResolution.customers.map((customer) =>
+      buildPremiumStatusForCustomer(env, customer, email)
+    ),
+  );
+  const statuses = statusResults
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
+  const entitled = statuses.filter(hasPremiumAccess).sort(comparePremiumStatuses);
+  if (entitled[0]) return entitled[0];
+
+  const statusFailure = statusResults.find((result) => result.status === "rejected");
+  const lookupFailure = customerResolution.lookupErrors[0];
+  if (statusFailure || lookupFailure) {
+    throw statusFailure?.reason || lookupFailure;
+  }
+  return statuses[0] || freePremiumStatus(email);
 }
 
 // --- CORS ---
@@ -1229,13 +1299,18 @@ async function handleActivationStart(request, env) {
     return corsResponse(request, env, { error: "A valid email is required" }, 400);
   }
 
-  if (!env.RESEND_API_KEY || !env.PREMIUM_FROM_EMAIL || !env.PREMIUM_TOKEN_SECRET || !env.ACTIVATION_KV) {
+  if (
+    !env.RESEND_API_KEY ||
+    !env.PREMIUM_FROM_EMAIL ||
+    !env.PREMIUM_TOKEN_SECRET ||
+    !env.ACTIVATION_GUARD
+  ) {
     return corsResponse(
       request,
       env,
       {
         error:
-          "Premium email verification is not configured yet. Set RESEND_API_KEY, PREMIUM_FROM_EMAIL, PREMIUM_TOKEN_SECRET, and ACTIVATION_KV in the worker environment.",
+          "Premium email verification is not configured yet. Set RESEND_API_KEY, PREMIUM_FROM_EMAIL, PREMIUM_TOKEN_SECRET, and ACTIVATION_GUARD in the worker environment.",
       },
       503,
     );
@@ -1247,9 +1322,9 @@ async function handleActivationStart(request, env) {
   const code = generateVerificationCode();
   const codeDigest = await buildActivationCodeDigest(env, email, code, nonce, exp);
 
-  let customer;
+  let customerResolution;
   try {
-    customer = await findCustomerByEmail(env, email);
+    customerResolution = await findCustomersByEmail(env, email);
   } catch (error) {
     if (!isStripeApiError(error)) throw error;
     return stripeUnavailableResponse(request, env, "activation.start.failed", {
@@ -1262,6 +1337,7 @@ async function handleActivationStart(request, env) {
     }, "Premium verification is temporarily unavailable. Request a new code shortly.");
   }
 
+  const customer = customerResolution.customers[0] || null;
   if (customer?.email) {
     await sendActivationCodeEmail(env, email, code);
   }
@@ -1318,16 +1394,6 @@ async function handleActivationVerify(request, env) {
     );
   }
 
-  const attempt = await consumeActivationAttempt(request, env, challengeToken);
-  if (attempt.response) {
-    logPremiumEvent("warn", "activation.verify.rejected", {
-      activationId: challenge.nonce || "",
-      reason: "attempt_guard",
-      responseStatus: attempt.response.status,
-    });
-    return attempt.response;
-  }
-
   const expectedDigest = await buildActivationCodeDigest(
     env,
     email,
@@ -1336,6 +1402,13 @@ async function handleActivationVerify(request, env) {
     challenge.exp,
   );
   if (expectedDigest !== challenge.codeDigest) {
+    const guardFailure = await recordInvalidActivationAttempt(
+      request,
+      env,
+      challengeToken,
+      challenge.exp,
+    );
+    if (guardFailure) return guardFailure;
     logPremiumEvent("warn", "activation.verify.rejected", {
       activationId: challenge.nonce || "",
       reason: "invalid_code",
@@ -1343,12 +1416,27 @@ async function handleActivationVerify(request, env) {
     return corsResponse(request, env, { error: "Invalid verification code" }, 403);
   }
 
+  const guardFailure = await checkActivationAttemptGuard(
+    request,
+    env,
+    challengeToken,
+    challenge.exp,
+  );
+  if (guardFailure) {
+    logPremiumEvent("warn", "activation.verify.rejected", {
+      activationId: challenge.nonce || "",
+      reason: "attempt_guard",
+      responseStatus: guardFailure.status,
+    });
+    return guardFailure;
+  }
+
   const activationId = challenge.nonce || "";
   logPremiumEvent("info", "activation.verify.code_accepted", { activationId });
 
-  let customer;
+  let customerResolution;
   try {
-    customer = await findCustomerByEmail(env, email);
+    customerResolution = await findCustomersByEmail(env, email);
   } catch (error) {
     if (!isStripeApiError(error)) throw error;
     return stripeUnavailableResponse(request, env, "activation.verify.failed", {
@@ -1361,6 +1449,7 @@ async function handleActivationVerify(request, env) {
     });
   }
 
+  const customer = customerResolution.customers[0] || null;
   if (!customer?.id) {
     logPremiumEvent("warn", "activation.verify.completed", {
       activationId,
@@ -1384,7 +1473,7 @@ async function handleActivationVerify(request, env) {
 
   let status;
   try {
-    status = await buildPremiumStatus(env, customer.id, email);
+    status = await buildBestPremiumStatusForEmail(env, customerResolution, email);
   } catch (error) {
     if (!isStripeApiError(error)) throw error;
     return stripeUnavailableResponse(request, env, "activation.verify.failed", {
@@ -1398,9 +1487,9 @@ async function handleActivationVerify(request, env) {
     });
   }
 
-  const active = status.status === "active" || status.status === "trialing";
+  const active = hasPremiumAccess(status);
   if (active) {
-    await markActivationChallengeRedeemed(env, attempt.key);
+    await markActivationChallengeRedeemed(env, challengeToken, challenge.exp);
   }
   logPremiumEvent(active ? "info" : "warn", "activation.verify.completed", {
     activationId,
