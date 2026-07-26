@@ -1,5 +1,9 @@
 import { createSignal, onMount, type Accessor } from "solid-js";
 import type { DevToolsPanelHostState } from "../../../../shared/devtools-types";
+import {
+  DOCKED_DEVTOOLS_MAX_HEIGHT,
+  DOCKED_DEVTOOLS_MIN_HEIGHT,
+} from "../../../../shared/devtools";
 
 type DevToolsPanelHostControls = {
   hostState: Accessor<DevToolsPanelHostState>;
@@ -57,14 +61,32 @@ export function useDevToolsPanelHost(): DevToolsPanelHostControls {
 
     const startY = event.screenY;
     const startHeight = window.innerHeight;
-    const dragState = { currentY: startY, rafId: null as number | null };
+    let finished = false;
+    const dragState = {
+      currentY: startY,
+      rafId: null as number | null,
+      requestId: 0,
+    };
 
-    const resizeToCurrentPointer = () => {
+    const resizeToCurrentPointer = (): Promise<void> => {
       dragState.rafId = null;
-      const nextHeight = startHeight + startY - dragState.currentY;
-      void window.vessel.devtoolsPanel
+      const nextHeight = Math.max(
+        DOCKED_DEVTOOLS_MIN_HEIGHT,
+        Math.min(
+          DOCKED_DEVTOOLS_MAX_HEIGHT,
+          Math.round(startHeight + startY - dragState.currentY),
+        ),
+      );
+      const requestId = ++dragState.requestId;
+
+      // Keep the visual edge under the pointer instead of waiting for a
+      // renderer-to-main round trip on every animation frame.
+      setHostState((current) => ({ ...current, height: nextHeight }));
+
+      return window.vessel.devtoolsPanel
         .resize(nextHeight)
         .then((height) => {
+          if (requestId !== dragState.requestId) return;
           setHostState((current) => ({ ...current, height }));
         })
         .catch(() => {
@@ -72,10 +94,16 @@ export function useDevToolsPanelHost(): DevToolsPanelHostControls {
         });
     };
 
-    const commitResize = () => {
-      void window.vessel.devtoolsPanel.commitResize().catch(() => {
+    const commitResize = async () => {
+      try {
+        await window.vessel.devtoolsPanel.commitResize();
+      } catch {
         /* ignore commit failures during drag cleanup */
-      });
+      } finally {
+        // Keep the fixed, bottom-anchored panel active until the native view
+        // has been restored to its final bounds.
+        setIsResizing(false);
+      }
     };
 
     const clearPointerTracking = () => {
@@ -83,6 +111,7 @@ export function useDevToolsPanelHost(): DevToolsPanelHostControls {
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerUp);
       window.removeEventListener("blur", onWindowBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       target.removeEventListener("lostpointercapture", onPointerUp);
       if (target.hasPointerCapture?.(event.pointerId)) {
         target.releasePointerCapture(event.pointerId);
@@ -93,8 +122,6 @@ export function useDevToolsPanelHost(): DevToolsPanelHostControls {
       }
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      setIsResizing(false);
-      commitResize();
     };
 
     const scheduleResize = () => {
@@ -103,33 +130,45 @@ export function useDevToolsPanelHost(): DevToolsPanelHostControls {
     };
 
     function onPointerMove(pointerEvent: PointerEvent) {
+      if (finished) return;
       dragState.currentY = pointerEvent.screenY;
       scheduleResize();
     }
 
-    function onPointerUp(pointerEvent: PointerEvent) {
-      dragState.currentY = pointerEvent.screenY;
+    function finishResize(pointerEvent?: PointerEvent) {
+      if (finished) return;
+      finished = true;
+      if (pointerEvent) {
+        dragState.currentY = pointerEvent.screenY;
+      }
       if (dragState.rafId !== null) {
         cancelAnimationFrame(dragState.rafId);
         dragState.rafId = null;
       }
-      resizeToCurrentPointer();
+      const finalResize = resizeToCurrentPointer();
       clearPointerTracking();
+      void finalResize.finally(commitResize);
+    }
+
+    function onPointerUp(pointerEvent: PointerEvent) {
+      finishResize(pointerEvent);
     }
 
     function onWindowBlur() {
-      if (dragState.rafId !== null) {
-        cancelAnimationFrame(dragState.rafId);
-        dragState.rafId = null;
+      finishResize();
+    }
+
+    function onVisibilityChange() {
+      if (document.hidden) {
+        finishResize();
       }
-      resizeToCurrentPointer();
-      clearPointerTracking();
     }
 
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerUp);
     window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     target.addEventListener("lostpointercapture", onPointerUp);
   };
 

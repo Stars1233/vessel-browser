@@ -7,6 +7,9 @@ export const DETACHED_DEVTOOLS_DEFAULT_WIDTH = 920;
 export const DETACHED_DEVTOOLS_DEFAULT_HEIGHT = 560;
 export const DETACHED_DEVTOOLS_MIN_WIDTH = 520;
 export const DETACHED_DEVTOOLS_MIN_HEIGHT = 320;
+export const DOCKED_DEVTOOLS_MIN_HEIGHT = 120;
+export const DOCKED_DEVTOOLS_MAX_HEIGHT = 600;
+export const DOCKED_DEVTOOLS_RESIZE_OVERLAP = 48;
 
 export function sanitizeDevToolsPanelMode(
   value: unknown,
