@@ -63,6 +63,7 @@ import type {
   PremiumState,
   PremiumStatus,
 } from "../src/shared/types";
+import { Channels } from "../src/shared/channels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -194,11 +195,55 @@ test("private window launch is contained on setup failure", () => {
   }
 });
 
-test("private window launch succeeds through the safe entry point", () => {
+test("private window launch succeeds with scoped chrome IPC", () => {
+  const existingWindows = new Set(getPrivateWindows());
   const beforeCount = getPrivateWindows().size;
 
   assert.equal(openPrivateWindowSafely(), true);
   assert.equal(getPrivateWindows().size, beforeCount + 1);
+
+  const openedWindow = [...getPrivateWindows()].find(
+    (privateWindow) => !existingWindows.has(privateWindow),
+  );
+  assert.ok(openedWindow);
+  assert.throws(
+    () =>
+      assertTrustedIpcSender({
+        sender: openedWindow.chromeView.webContents,
+      } as never),
+    /untrusted renderer/,
+  );
+
+  const privateHandlers = (
+    openedWindow.chromeView.webContents.ipc as unknown as {
+      _handlers: Map<string, (...args: unknown[]) => unknown>;
+    }
+  )._handlers;
+  assert.equal(typeof privateHandlers.get(Channels.SETTINGS_GET), "function");
+  assert.equal(typeof privateHandlers.get(Channels.SETTINGS_HEALTH_GET), "function");
+  assert.doesNotThrow(() => privateHandlers.get(Channels.SETTINGS_GET)?.({}));
+  assert.ok(Array.isArray(privateHandlers.get(Channels.DOWNLOADS_GET)?.({})));
+
+  openedWindow.window.close();
+  assert.equal(getPrivateWindows().size, beforeCount);
+});
+
+test("private window shutdown does not lay out destroyed views", () => {
+  const existingWindows = new Set(getPrivateWindows());
+  const beforeCount = getPrivateWindows().size;
+
+  assert.equal(openPrivateWindowSafely(), true);
+  const openedWindow = [...getPrivateWindows()].find(
+    (privateWindow) => !existingWindows.has(privateWindow),
+  );
+  assert.ok(openedWindow);
+
+  openedWindow.window.getContentSize = () => {
+    throw new TypeError("Object has been destroyed");
+  };
+
+  assert.doesNotThrow(() => openedWindow.window.close());
+  assert.equal(getPrivateWindows().size, beforeCount);
 });
 
 test("trusted IPC guard rejects unregistered renderer senders", () => {

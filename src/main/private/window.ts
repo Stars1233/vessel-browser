@@ -5,6 +5,12 @@ import { TabManager } from "../tabs/tab-manager";
 import { Channels } from "../../shared/channels";
 import { installAdBlockingForSession } from "../network/ad-blocking";
 import { installDownloadHandlerForSession } from "../network/downloads";
+import {
+  clearDownloads,
+  listDownloads,
+  openDownload,
+  showDownloadInFolder,
+} from "../network/download-manager";
 import { createLogger } from "../../shared/logger";
 import type { TabGroupColor } from "../../shared/types";
 import { CHROME_HEIGHT } from "../window";
@@ -12,8 +18,10 @@ import { resolveRendererFile } from "../startup/renderer";
 import { loadTrustedAppURL } from "../network/url-safety";
 import { showTabContextMenu, showGroupContextMenu } from "../tabs/tab-context-menu";
 import { createFindInPageBridge } from "../tabs/find-bridge";
-import { sendSafe } from "../ipc/common";
+import { assertString, sendSafe } from "../ipc/common";
 import { registerDisabledDevToolsPanelHandlers } from "../devtools/panel";
+import { getRendererSettings } from "../config/settings";
+import { getRuntimeHealth } from "../health/runtime-health";
 
 const logger = createLogger("PrivateWindow");
 
@@ -29,6 +37,8 @@ const privateWindows = new Set<PrivateWindowState>();
 
 function layoutPrivateViews(state: PrivateWindowState): void {
   const { window: win, chromeView, tabManager } = state;
+  if (win.isDestroyed() || chromeView.webContents.isDestroyed()) return;
+
   const [width, height] = win.getContentSize();
 
   chromeView.setBounds({ x: 0, y: 0, width, height: CHROME_HEIGHT });
@@ -37,7 +47,7 @@ function layoutPrivateViews(state: PrivateWindowState): void {
   win.contentView.addChildView(chromeView);
 
   const activeTab = tabManager.getActiveTab();
-  if (activeTab) {
+  if (activeTab && !activeTab.view.webContents.isDestroyed()) {
     activeTab.view.setBounds({
       x: 0,
       y: CHROME_HEIGHT,
@@ -192,6 +202,24 @@ function registerPrivateIpcHandlers(state: PrivateWindowState): void {
   // Report that this is a private window
   ipc.handle(Channels.IS_PRIVATE_MODE, () => true);
 
+  // The shared chrome UI needs these read-only data sources, but private
+  // windows intentionally do not receive the full trusted-renderer IPC set.
+  ipc.handle(Channels.SETTINGS_GET, () => getRendererSettings());
+  ipc.handle(Channels.SETTINGS_HEALTH_GET, () => getRuntimeHealth());
+  ipc.handle(Channels.DOWNLOADS_GET, () => listDownloads());
+  ipc.handle(Channels.DOWNLOADS_CLEAR, () => {
+    clearDownloads();
+    return true;
+  });
+  ipc.handle(Channels.DOWNLOADS_OPEN, (_e, id: unknown) => {
+    assertString(id, "download id");
+    return openDownload(id);
+  });
+  ipc.handle(Channels.DOWNLOADS_SHOW_IN_FOLDER, (_e, id: unknown) => {
+    assertString(id, "download id");
+    return showDownloadInFolder(id);
+  });
+
   ipc.handle(Channels.OPEN_PRIVATE_WINDOW, () => {
     return openPrivateWindowSafely();
   });
@@ -249,8 +277,42 @@ export function createPrivateWindow(): PrivateWindowState {
   const privateSession = session.fromPartition(privateSessionPartition);
 
   let win: BaseWindow | null = null;
+  let chromeView: WebContentsView | null = null;
   let tabManager: TabManager | null = null;
   let state: PrivateWindowState | null = null;
+  let cleanupStarted = false;
+
+  const cleanupPrivateResources = (): void => {
+    if (cleanupStarted) return;
+    cleanupStarted = true;
+
+    const closingState = state;
+    state = null;
+    if (closingState) {
+      privateWindows.delete(closingState);
+    }
+
+    try {
+      tabManager?.destroyAllTabs();
+    } catch (cleanupError) {
+      logger.warn("Failed to clean up private tabs:", cleanupError);
+    }
+
+    try {
+      if (chromeView && !chromeView.webContents.isDestroyed()) {
+        chromeView.webContents.close();
+      }
+    } catch (cleanupError) {
+      logger.warn("Failed to close private chrome renderer:", cleanupError);
+    }
+
+    void Promise.all([
+      privateSession.clearStorageData(),
+      privateSession.clearCache(),
+    ]).catch((cleanupError) => {
+      logger.warn("Failed to clear private browsing session:", cleanupError);
+    });
+  };
 
   try {
     privateSession.setUserAgent(session.defaultSession.getUserAgent());
@@ -266,7 +328,7 @@ export function createPrivateWindow(): PrivateWindowState {
       title: "Vessel - Private Browsing",
     });
 
-    const chromeView = new WebContentsView({
+    chromeView = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "../preload/index.js"),
         sandbox: true,
@@ -308,15 +370,7 @@ export function createPrivateWindow(): PrivateWindowState {
     });
 
     win.on("closed", () => {
-      if (!state) return;
-      privateWindows.delete(state);
-      tabManager?.destroyAllTabs();
-      void Promise.all([
-        privateSession.clearStorageData(),
-        privateSession.clearCache(),
-      ]).catch((error) => {
-        logger.warn("Failed to clear private browsing session:", error);
-      });
+      cleanupPrivateResources();
     });
 
     privateWindows.add(state);
@@ -341,25 +395,12 @@ export function createPrivateWindow(): PrivateWindowState {
     return state;
   } catch (error) {
     logger.error("Failed to create private browsing window:", error);
-    if (state) {
-      privateWindows.delete(state);
-    }
-    try {
-      tabManager?.destroyAllTabs();
-    } catch (cleanupError) {
-      logger.warn("Failed to clean up private tabs after launch failure:", cleanupError);
-    }
+    cleanupPrivateResources();
     try {
       win?.close();
     } catch (cleanupError) {
       logger.warn("Failed to close private window after launch failure:", cleanupError);
     }
-    void Promise.all([
-      privateSession.clearStorageData(),
-      privateSession.clearCache(),
-    ]).catch((cleanupError) => {
-      logger.warn("Failed to clear failed private browsing session:", cleanupError);
-    });
     throw error;
   }
 }

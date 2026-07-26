@@ -114,7 +114,9 @@ const App: Component = () => {
     initSecurityStore();
     void loadAndApplyTheme();
 
-    window.vessel.ui.rendererReady(view as "chrome" | "sidebar" | "devtools");
+    if (!isChromeOnlyWindow) {
+      window.vessel.ui.rendererReady(view as "chrome" | "sidebar" | "devtools");
+    }
 
     const cleanupSettings = window.vessel.settings.onUpdate((settings) => {
       applyTheme(settings.theme ?? "dark");
