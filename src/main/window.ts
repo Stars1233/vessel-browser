@@ -5,6 +5,7 @@ import { TabManager, type TabStateChangeMeta } from "./tabs/tab-manager";
 import { loadSettings } from "./config/settings";
 import { Channels } from "../shared/channels";
 import { SIDEBAR_RESIZE_HANDLE_OVERLAP } from "../shared/sidebar";
+import { DOCKED_DEVTOOLS_RESIZE_OVERLAP } from "../shared/devtools";
 import type { UIState, TabState } from "../shared/types";
 import { capturePageSnapshot } from "./content/page-diff-monitor";
 import { sendSafe } from "./ipc/common";
@@ -51,9 +52,6 @@ function enableClipboardShortcuts(view: WebContentsView): void {
 export const CHROME_HEIGHT = 110; // title(32) + tabs(36+1border) + address(40+1border)
 
 const DEFAULT_DEVTOOLS_PANEL_HEIGHT = 250;
-const MIN_DEVTOOLS_PANEL = 120;
-const MAX_DEVTOOLS_PANEL = 600;
-
 export interface WindowState extends SidebarPanelHostState, DevToolsPanelHostWindowState {
   chromeView: WebContentsView;
   sidebarView: WebContentsView;
@@ -456,4 +454,44 @@ export function resizeSidebarViews(state: WindowState): void {
   }
 }
 
-export { MIN_DEVTOOLS_PANEL, MAX_DEVTOOLS_PANEL };
+/**
+ * Lightweight DevTools-only resize — skips view re-stacking and keeps just a
+ * narrow transparent capture band above the visible panel during a drag.
+ */
+export function resizeDevToolsViews(
+  state: WindowState,
+  capturePointer = false,
+): void {
+  const { mainWindow, devtoolsPanelView, tabManager, uiState } = state;
+  if (!isDevToolsPanelDocked(state)) return;
+
+  const [width, height] = mainWindow.getContentSize();
+  const chromeHeight = uiState.focusMode ? 0 : CHROME_HEIGHT;
+  const sidebarWidth = isSidebarAttached(state) ? uiState.sidebarWidth : 0;
+  const contentWidth = width - sidebarWidth;
+  const devtoolsHeight = uiState.devtoolsPanelHeight;
+  const availableOverlap = Math.max(
+    0,
+    height - chromeHeight - devtoolsHeight,
+  );
+  const resizeOverlap = capturePointer
+    ? Math.min(DOCKED_DEVTOOLS_RESIZE_OVERLAP, availableOverlap)
+    : 0;
+
+  devtoolsPanelView.setBounds({
+    x: 0,
+    y: height - devtoolsHeight - resizeOverlap,
+    width: contentWidth,
+    height: devtoolsHeight + resizeOverlap,
+  });
+
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab) {
+    activeTab.view.setBounds({
+      x: 0,
+      y: chromeHeight,
+      width: contentWidth,
+      height: height - chromeHeight - devtoolsHeight,
+    });
+  }
+}

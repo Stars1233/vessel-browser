@@ -23,9 +23,12 @@ import {
   CHROME_HEIGHT,
   getWindowIconPath,
   layoutViews,
-  MIN_DEVTOOLS_PANEL,
-  MAX_DEVTOOLS_PANEL,
+  resizeDevToolsViews,
 } from "../window";
+import {
+  DOCKED_DEVTOOLS_MAX_HEIGHT,
+  DOCKED_DEVTOOLS_MIN_HEIGHT,
+} from "../../shared/devtools";
 import {
   closeDevToolsPanel,
   detachDevToolsPanel,
@@ -41,7 +44,6 @@ import {
   refreshDevToolsPageMap,
 } from "../devtools/tools";
 import { revealPageMapElement } from "../devtools/page-map-reveal";
-import { isSidebarAttached } from "../sidebar-panel";
 import {
   createKitFromText,
   getInstalledKits,
@@ -104,8 +106,11 @@ export function registerSystemHandlers(
     const [, windowHeight] = windowState.mainWindow.getContentSize();
     const chromeHeight = windowState.uiState.focusMode ? 0 : CHROME_HEIGHT;
     return Math.max(
-      MIN_DEVTOOLS_PANEL,
-      Math.min(MAX_DEVTOOLS_PANEL, windowHeight - chromeHeight - 80),
+      DOCKED_DEVTOOLS_MIN_HEIGHT,
+      Math.min(
+        DOCKED_DEVTOOLS_MAX_HEIGHT,
+        windowHeight - chromeHeight - 80,
+      ),
     );
   };
 
@@ -160,15 +165,7 @@ export function registerSystemHandlers(
     if (getDevToolsPanelHostState(windowState).detached) return;
     devToolsResizeActive = true;
     clearDevToolsResizeRecoveryTimer();
-    const [windowWidth, windowHeight] = windowState.mainWindow.getContentSize();
-    const chromeHeight = windowState.uiState.focusMode ? 0 : CHROME_HEIGHT;
-    const sidebarWidth = isSidebarAttached(windowState) ? windowState.uiState.sidebarWidth : 0;
-    windowState.devtoolsPanelView.setBounds({
-      x: 0,
-      y: chromeHeight,
-      width: windowWidth - sidebarWidth,
-      height: windowHeight - chromeHeight,
-    });
+    resizeDevToolsViews(windowState, true);
     scheduleDevToolsResizeRecovery();
   });
 
@@ -176,13 +173,16 @@ export function registerSystemHandlers(
     assertTrustedIpcSender(event);
     const validatedHeight = parseIpc(DevToolsHeightSchema, height, "height");
     const clamped = Math.max(
-      MIN_DEVTOOLS_PANEL,
+      DOCKED_DEVTOOLS_MIN_HEIGHT,
       Math.min(maxDockedDevToolsHeight(), Math.round(validatedHeight)),
     );
     if (devToolsResizeActive) {
       windowState.uiState.devtoolsPanelHeight = clamped;
+      resizeDevToolsViews(windowState, true);
       scheduleDevToolsResizeRecovery();
-      emitDevToolsPanelHostState(windowState);
+      // The panel renderer tracks the drag optimistically. Broadcasting every
+      // intermediate height creates a second, lagging update path that can
+      // overwrite newer pointer positions when IPC replies arrive out of order.
       return clamped;
     }
     resizeDockedDevToolsPanel(windowState, clamped, relayout);
