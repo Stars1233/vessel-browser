@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createLogger } from "../../../shared/logger";
 import type { AgentRuntime } from "../../agent/runtime";
@@ -24,14 +24,14 @@ export function registerVaultTools(
       title: "Check Vault Credentials",
       description:
         "Check whether stored credentials exist for a domain. Returns credential labels and usernames but NEVER password values. Use this before vault_login to verify credentials are available.",
-      inputSchema: {
+      inputSchema: z.object({
         domain: z
           .string()
           .describe(
             "The domain to check credentials for (e.g. 'github.com'). If omitted, checks the active tab's domain.",
           )
           .optional(),
-      },
+      }),
     },
     async ({ domain }) => {
       const premiumGate = getPremiumToolGateResponse("vault_status");
@@ -84,7 +84,7 @@ export function registerVaultTools(
       title: "Fill Login with Vault Credentials",
       description:
         "Fill a login form on the current page using stored credentials from the Agent Credential Vault. The credential values are filled directly into the page — they are NEVER returned in this response. The user will see a consent dialog before credentials are used.",
-      inputSchema: {
+      inputSchema: z.object({
         credential_label: z
           .string()
           .optional()
@@ -115,7 +115,7 @@ export function registerVaultTools(
           .describe(
             "Element index of the submit button. Required if submit_after is true.",
           ),
-      },
+      }),
     },
     async ({
       credential_label,
@@ -236,7 +236,7 @@ export function registerVaultTools(
       title: "Fill TOTP Code from Vault",
       description:
         "Generate a TOTP 2FA code from a stored secret and fill it into a code input field. The TOTP secret and generated code are NEVER returned — only filled directly into the page.",
-      inputSchema: {
+      inputSchema: z.object({
         credential_label: z
           .string()
           .optional()
@@ -256,7 +256,7 @@ export function registerVaultTools(
           .number()
           .optional()
           .describe("Element index of the submit button."),
-      },
+      }),
     },
     async ({ credential_label, code_index, submit_after, submit_index }) => {
       const premiumGate = getPremiumToolGateResponse("vault_totp");

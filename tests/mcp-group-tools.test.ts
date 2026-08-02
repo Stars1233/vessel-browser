@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z, type ZodType } from "zod";
+import type { McpServer } from "@modelcontextprotocol/server";
+import { z, type ZodObject, type ZodRawShape } from "zod";
 
 import { registerGroupTools } from "../src/main/mcp/tools/groups";
 import type { AgentRuntime } from "../src/main/agent/runtime";
@@ -17,7 +17,7 @@ type TextResponse = {
 type ToolConfig = {
   title?: string;
   description?: string;
-  inputSchema?: Record<string, ZodType<unknown>>;
+  inputSchema?: ZodObject<ZodRawShape>;
 };
 
 type ToolRegistration = {
@@ -35,6 +35,12 @@ function getTool(tools: Map<string, ToolRegistration>, name: string): ToolRegist
     throw new Error(`Tool ${name} was not registered`);
   }
   return tool;
+}
+
+function inputSchema(config: ToolConfig): ZodObject<ZodRawShape> {
+  const schema = config.inputSchema;
+  assert.ok(schema);
+  return schema;
 }
 
 function createHarness() {
@@ -104,7 +110,7 @@ test("MCP group color schemas use the shared tab group palette", () => {
   const { tools } = createHarness();
 
   for (const toolName of ["create_group", "set_group_color"]) {
-    const colorSchema = getTool(tools, toolName).config.inputSchema?.color;
+    const colorSchema = inputSchema(getTool(tools, toolName).config).shape.color;
     assert.ok(colorSchema);
 
     for (const color of TAB_GROUP_COLORS) {
@@ -126,10 +132,8 @@ test("MCP group color schemas can be represented in JSON Schema", () => {
   const { tools } = createHarness();
 
   for (const toolName of ["create_group", "set_group_color"]) {
-    const inputSchema = getTool(tools, toolName).config.inputSchema;
-    assert.ok(inputSchema);
-
-    const jsonSchema = z.toJSONSchema(z.object(inputSchema));
+    const config = getTool(tools, toolName).config;
+    const jsonSchema = z.toJSONSchema(inputSchema(config));
     const colorSchema = jsonSchema.properties?.color;
 
     assert.deepEqual(colorSchema, {

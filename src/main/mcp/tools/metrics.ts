@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import type { TabManager } from "../../tabs/tab-manager";

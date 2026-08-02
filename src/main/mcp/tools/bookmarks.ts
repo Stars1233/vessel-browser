@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
   composeDuplicateBookmarkResponse,
@@ -31,13 +31,13 @@ export function registerBookmarkTools(
       title: "Create Bookmark Folder",
       description:
         "Create a named folder for organizing bookmarks. If a folder with the same name already exists, return it instead of duplicating it.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().describe("Name for the new folder"),
         summary: z
           .string()
           .optional()
           .describe("Optional one-sentence summary shown in the UI"),
-      },
+      }),
     },
     async ({ name, summary }) => {
       return withAction(
@@ -68,7 +68,7 @@ export function registerBookmarkTools(
       title: "Save Bookmark",
       description:
         "Save the current page, a specific URL, or a link target from the current page into a bookmark folder. You can provide folder_id or folder_name; missing folder names can be created automatically.",
-      inputSchema: {
+      inputSchema: z.object({
         url: z
           .string()
           .optional()
@@ -141,7 +141,7 @@ export function registerBookmarkTools(
           .record(z.string(), z.string())
           .optional()
           .describe("Arbitrary key-value hints for the agent"),
-      },
+      }),
     },
     async ({
       url,
@@ -254,7 +254,7 @@ export function registerBookmarkTools(
       title: "List Bookmarks",
       description:
         "List all bookmark folders and their contents. Optionally filter by folder.",
-      inputSchema: {
+      inputSchema: z.object({
         folder_id: z
           .string()
           .optional()
@@ -263,7 +263,7 @@ export function registerBookmarkTools(
           .string()
           .optional()
           .describe("Filter to a specific folder name (omit for all)"),
-      },
+      }),
     },
     async ({ folder_id, folder_name }) => {
       return withAction(
@@ -318,7 +318,7 @@ export function registerBookmarkTools(
       title: "Organize Bookmark",
       description:
         "Organize a bookmark by intent: save or move a bookmark into a folder, creating the folder if needed. Works with bookmark_id, url, a link target from the current page, or the current page itself.",
-      inputSchema: {
+      inputSchema: z.object({
         bookmark_id: z
           .string()
           .optional()
@@ -382,7 +382,7 @@ export function registerBookmarkTools(
           .record(z.string(), z.string())
           .optional()
           .describe("Arbitrary key-value hints for the agent"),
-      },
+      }),
     },
     async (args) => {
       return withAction(
@@ -477,9 +477,9 @@ export function registerBookmarkTools(
       title: "Search Bookmarks",
       description:
         "Search bookmarks by title, URL, note, folder name, or folder summary.",
-      inputSchema: {
+      inputSchema: z.object({
         query: z.string().describe("Search term to match against bookmarks"),
-      },
+      }),
     },
     async ({ query }) => {
       return withAction(
@@ -513,9 +513,9 @@ export function registerBookmarkTools(
     {
       title: "Remove Bookmark",
       description: "Remove a specific bookmark by its ID.",
-      inputSchema: {
+      inputSchema: z.object({
         bookmark_id: z.string().describe("ID of the bookmark to remove"),
-      },
+      }),
     },
     async ({ bookmark_id }) => {
       return withAction(
@@ -539,7 +539,7 @@ export function registerBookmarkTools(
       title: "Archive Bookmark",
       description:
         'Archive the current page, a URL, a link target from the current page, or an existing bookmark into the default "Archive" folder.',
-      inputSchema: {
+      inputSchema: z.object({
         bookmark_id: z
           .string()
           .optional()
@@ -570,7 +570,7 @@ export function registerBookmarkTools(
           .string()
           .optional()
           .describe("Optional note to store with the archived bookmark"),
-      },
+      }),
     },
     async ({ bookmark_id, url, title, index, selector, note }) => {
       return withAction(
@@ -660,13 +660,13 @@ export function registerBookmarkTools(
       title: "Open Bookmark",
       description:
         "Open a saved bookmark by bookmark ID. Optionally open it in a new tab.",
-      inputSchema: {
+      inputSchema: z.object({
         bookmark_id: z.string().describe("ID of the bookmark to open"),
         new_tab: z
           .boolean()
           .optional()
           .describe("Open the bookmark in a new tab"),
-      },
+      }),
     },
     async ({ bookmark_id, new_tab }) => {
       return withAction(
@@ -713,7 +713,7 @@ export function registerBookmarkTools(
       title: "Remove Bookmark Folder",
       description:
         "Remove a folder. By default bookmarks in it are moved to Unsorted. Set delete_contents to true to delete them with the folder.",
-      inputSchema: {
+      inputSchema: z.object({
         folder_id: z.string().describe("ID of the folder to remove"),
         delete_contents: z
           .boolean()
@@ -722,7 +722,7 @@ export function registerBookmarkTools(
           .describe(
             "If true, delete all bookmarks in the folder. If false (default), move them to Unsorted.",
           ),
-      },
+      }),
     },
     async ({ folder_id, delete_contents }) => {
       return withAction(
@@ -751,14 +751,14 @@ export function registerBookmarkTools(
     {
       title: "Rename Bookmark Folder",
       description: "Rename an existing bookmark folder.",
-      inputSchema: {
+      inputSchema: z.object({
         folder_id: z.string().describe("ID of the folder to rename"),
         new_name: z.string().describe("New name for the folder"),
         summary: z
           .string()
           .optional()
           .describe("Optional one-sentence summary for the folder"),
-      },
+      }),
     },
     async ({ folder_id, new_name, summary }) => {
       return withAction(
@@ -793,7 +793,7 @@ export function registerBookmarkTools(
       title: "Link Bookmark To Memory",
       description:
         "Create a note for a bookmark or append bookmark details into an existing memory note.",
-      inputSchema: {
+      inputSchema: z.object({
         bookmark_id: z.string().describe("Bookmark ID to link"),
         note_path: z
           .string()
@@ -817,7 +817,7 @@ export function registerBookmarkTools(
           .array(z.string())
           .optional()
           .describe("Optional tags when creating a new note"),
-      },
+      }),
     },
     async ({ bookmark_id, note_path, title, folder, note, tags }) => {
       return withAction(

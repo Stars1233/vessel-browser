@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import type { TabManager } from "../../tabs/tab-manager";
@@ -16,7 +16,7 @@ export function registerFlowTools(
       title: "Start Workflow",
       description:
         "Begin tracking a multi-step web workflow. Vessel will show progress after every action so you always know where you are in the flow.",
-      inputSchema: {
+      inputSchema: z.object({
         goal: z
           .string()
           .describe(
@@ -25,7 +25,7 @@ export function registerFlowTools(
         steps: stringArrayLikeSchema().describe(
           "Ordered list of step labels (e.g. ['Log in', 'Search', 'Select item', 'Checkout'])",
         ),
-      },
+      }),
     },
     async ({ goal, steps }) => {
       const premiumGate = getPremiumToolGateResponse("flow_start");
@@ -50,12 +50,12 @@ export function registerFlowTools(
       title: "Advance Workflow Step",
       description:
         "Mark the current workflow step as done and move to the next one. Call this after completing each step.",
-      inputSchema: {
+      inputSchema: z.object({
         detail: z
           .string()
           .optional()
           .describe("Brief note about what was accomplished"),
-      },
+      }),
     },
     async ({ detail }) => {
       const premiumGate = getPremiumToolGateResponse("flow_advance");

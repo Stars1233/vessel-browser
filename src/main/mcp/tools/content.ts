@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { PageContent } from "../../../shared/types";
 import { createLogger } from "../../../shared/logger";
@@ -88,7 +88,7 @@ export function registerContentTools(
       title: "Publish Agent Transcript",
       description:
         "Publish or stream agent reasoning/status text into Vessel's in-browser transcript monitor. Intended for external harnesses that want to mirror live thinking into the browser UI.",
-      inputSchema: {
+      inputSchema: z.object({
         text: z.string().describe("Transcript text chunk to publish"),
         stream_id: z
           .string()
@@ -110,7 +110,7 @@ export function registerContentTools(
           .string()
           .optional()
           .describe("Optional short label such as Plan, Search, or Summary"),
-      },
+      }),
     },
     async ({ text, stream_id, mode, kind, title }) => {
       const entry = runtime.publishTranscript({
@@ -155,14 +155,14 @@ export function registerContentTools(
       title: "Extract Page Content",
       description:
         "Extract structured content from the current page. Modes: 'full' (default, everything), 'summary' (title+headings+stats), 'interactives_only' (clickable elements with indices), 'forms_only' (form fields only), 'text_only' (page text, no interactives), 'visible_only' (only currently visible, in-viewport, unobstructed elements plus active overlays), 'results_only' (likely primary search/result links only).",
-      inputSchema: {
+      inputSchema: z.object({
         mode: z
           .enum(EXTRACT_MODES as [string, ...string[]])
           .optional()
           .describe(
             "Extraction mode: full, summary, interactives_only, forms_only, text_only, visible_only, results_only",
           ),
-      },
+      }),
     },
     async ({ mode }) => {
       const tab = tabManager.getActiveTab();
@@ -193,14 +193,14 @@ export function registerContentTools(
       title: "Read Page",
       description:
         "Read the active tab's page content. Includes saved highlights plus any active text selection or visible unsaved highlights on the page. Supports scoped modes plus glance and debug.",
-      inputSchema: {
+      inputSchema: z.object({
         mode: z
           .enum(READ_PAGE_MODES)
           .optional()
           .describe(
             "Read mode: glance, summary, interactives_only, forms_only, text_only, visible_only, results_only, full, or debug",
           ),
-      },
+      }),
     },
     async ({ mode }) => {
       const tab = tabManager.getActiveTab();
@@ -239,7 +239,7 @@ export function registerContentTools(
       title: "Set Ad Blocking",
       description:
         "Enable or disable ad blocking for the active tab or a matched tab. Reload after changes unless reload is false.",
-      inputSchema: {
+      inputSchema: z.object({
         enabled: z
           .boolean()
           .describe("Whether ad blocking should be enabled for the target tab"),
@@ -255,7 +255,7 @@ export function registerContentTools(
           .boolean()
           .optional()
           .describe("Reload the tab after changing the setting (default true)"),
-      },
+      }),
     },
     async ({ enabled, tabId, match, reload }) => {
       const activeTab = tabManager.getActiveTab();
@@ -302,14 +302,14 @@ export function registerContentTools(
       title: "Extract Structured Data",
       description:
         "Return normalized structured data derived from page JSON-LD, microdata, RDFa, and high-signal meta tags. Useful for recipes, products, articles, events, FAQs, and other schema-rich pages.",
-      inputSchema: {
+      inputSchema: z.object({
         type: z
           .string()
           .optional()
           .describe(
             "Optional schema type filter, for example Recipe, Product, Article, Event, or FAQPage",
           ),
-      },
+      }),
     },
     async ({ type }) => {
       const tab = tabManager.getActiveTab();
@@ -381,13 +381,13 @@ export function registerContentTools(
       title: "Extract Element Text",
       description:
         "Extract the text content of a specific element by its index number or CSS selector.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
           .describe("Element index from the page content listing"),
         selector: z.string().optional().describe("CSS selector as fallback"),
-      },
+      }),
     },
     async ({ index, selector }) => {
       const tab = tabManager.getActiveTab();

@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createLogger } from "../../../shared/logger";
 import type { AgentRuntime } from "../../agent/runtime";
@@ -23,7 +23,7 @@ export function registerHighlightTools(
       title: "Highlight Element",
       description:
         "Visually highlight an element or text on the page for the user. Use to draw attention to specific parts of the page. Highlights persist until cleared. Set persist=true to save the highlight so it re-appears when the user revisits this page.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
@@ -57,7 +57,7 @@ export function registerHighlightTools(
           .describe(
             "Highlight color. Use red for problems/errors, green for targets/success, blue for informational, purple for important, orange for warnings. Defaults to yellow.",
           ),
-      },
+      }),
     },
     async ({ index, selector, text, label, durationMs, persist, color }) => {
       const tab = tabManager.getActiveTab();
@@ -142,14 +142,14 @@ export function registerHighlightTools(
       title: "List Highlights",
       description:
         "List highlights related to the current browsing session. Includes saved persistent highlights plus the active tab's live text selection and any visible unsaved highlight marks. IMPORTANT: When the user says they highlighted or selected text, call this tool before falling back to screenshots or vision.",
-      inputSchema: {
+      inputSchema: z.object({
         url: z
           .string()
           .optional()
           .describe(
             "URL to list highlights for. Omit to see active tab highlights first, then all others.",
           ),
-      },
+      }),
     },
     async ({ url }) => {
       const state = highlightsManager.getState();
@@ -250,9 +250,9 @@ export function registerHighlightTools(
       title: "Remove Persistent Highlight",
       description:
         "Remove a persistent highlight by ID and clear it from any open tab. Use list_highlights to find IDs.",
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe("ID of the highlight to remove"),
-      },
+      }),
     },
     async ({ id }) => {
       const removed = highlightsManager.removeHighlight(id);

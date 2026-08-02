@@ -84,14 +84,15 @@ export async function clearMcpAuthFile(): Promise<void> {
 
 /** Returns the current MCP auth token. */
 export function getMcpAuthToken(): string | null {
-  return mcpRuntimeState.authToken;
+  return mcpRuntimeState.active?.authToken ?? null;
 }
 
 export function regenerateMcpAuthToken(): { endpoint: string } | null {
   const endpoint = getRuntimeHealth().mcp.endpoint;
-  if (!mcpRuntimeState.httpServer || !endpoint) return null;
-  mcpRuntimeState.authToken = crypto.randomBytes(32).toString("hex");
-  void writeMcpAuthFile(endpoint, mcpRuntimeState.authToken);
+  const active = mcpRuntimeState.active;
+  if (!active || !endpoint) return null;
+  active.authToken = crypto.randomBytes(32).toString("hex");
+  void writeMcpAuthFile(endpoint, active.authToken);
   return { endpoint };
 }
 

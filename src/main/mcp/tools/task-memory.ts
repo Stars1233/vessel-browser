@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import type { TabManager } from "../../tabs/tab-manager";
@@ -15,7 +15,7 @@ export function registerTaskMemoryTools(
       title: "Start Task",
       description:
         "Start tracking a task. Creates a task memory record with a goal that persists across actions and browser navigation. Use this at the beginning of a multi-step task so the human supervisor can see what you are working on.",
-      inputSchema: {
+      inputSchema: z.object({
         goal: z
           .string()
           .describe("What this task aims to accomplish"),
@@ -27,7 +27,7 @@ export function registerTaskMemoryTools(
           .record(z.string())
           .optional()
           .describe("Key-value facts relevant to this task (e.g. { username: alice })"),
-      },
+      }),
     },
     async ({ goal, nextStep, facts }) => {
       const task = runtime.startTaskMemory(goal, {
@@ -46,7 +46,7 @@ export function registerTaskMemoryTools(
       title: "Update Task",
       description:
         "Update the current task's next step or facts. Facts are merged with existing facts. Use this to record progress and keep the human supervisor informed.",
-      inputSchema: {
+      inputSchema: z.object({
         nextStep: z
           .string()
           .optional()
@@ -55,7 +55,7 @@ export function registerTaskMemoryTools(
           .record(z.string())
           .optional()
           .describe("Key-value facts to merge into the task (existing keys are overwritten)"),
-      },
+      }),
     },
     async ({ nextStep, facts }) => {
       const updated = runtime.updateTaskMemory({
@@ -75,11 +75,11 @@ export function registerTaskMemoryTools(
       title: "Add Task Note",
       description:
         "Add a note to the current task. Use this to record observations, intermediate results, or context for the human supervisor.",
-      inputSchema: {
+      inputSchema: z.object({
         text: z
           .string()
           .describe("The note text to add"),
-      },
+      }),
     },
     async ({ text }) => {
       const updated = runtime.addTaskNote(text);
@@ -94,12 +94,12 @@ export function registerTaskMemoryTools(
       title: "Set or Clear Task Blocker",
       description:
         "Mark the task as blocked with a reason, or clear a blocker to resume. Use this when you are stuck and need human input to continue.",
-      inputSchema: {
+      inputSchema: z.object({
         blocker: z
           .string()
           .optional()
           .describe("Description of what is blocking progress. Omit or empty string to clear a blocker."),
-      },
+      }),
     },
     async ({ blocker }) => {
       const updated = runtime.setTaskBlocker(blocker?.trim() || null);
@@ -117,12 +117,12 @@ export function registerTaskMemoryTools(
       title: "Resolve Task",
       description:
         "Mark the current task as completed. Optionally add a summary note. Use this when the task goal has been achieved.",
-      inputSchema: {
+      inputSchema: z.object({
         summary: z
           .string()
           .optional()
           .describe("Brief summary of the completed task"),
-      },
+      }),
     },
     async ({ summary }) => {
       const resolved = runtime.resolveTaskMemory(summary);
@@ -139,12 +139,12 @@ export function registerTaskMemoryTools(
       title: "Abandon Task",
       description:
         "Mark the current task as abandoned. Use this when the task cannot be completed or is no longer relevant.",
-      inputSchema: {
+      inputSchema: z.object({
         reason: z
           .string()
           .optional()
           .describe("Reason for abandoning the task"),
-      },
+      }),
     },
     async ({ reason }) => {
       const abandoned = runtime.abandonTaskMemory(reason);

@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { TAB_GROUP_COLORS } from "../../../shared/types";
 import type { AgentRuntime } from "../../agent/runtime";
@@ -36,11 +36,11 @@ export function registerGroupTools(
       title: "Create Tab Group",
       description:
         "Create a new tab group from the active tab or a specified tab. Optionally provide a name and color.",
-      inputSchema: {
+      inputSchema: z.object({
         tabId: z.string().optional().describe("Tab ID to group (defaults to active tab)"),
         name: z.string().optional().describe("Optional group name"),
         color: TabGroupColorSchema.optional().describe("Optional group color"),
-      },
+      }),
     },
     async ({ tabId, name, color }) =>
       withAction(runtime, tabManager, "create_group", { tabId, name, color }, async () =>
@@ -53,10 +53,10 @@ export function registerGroupTools(
     {
       title: "Assign Tab to Group",
       description: "Move a tab into an existing group by ID. Defaults to the active tab.",
-      inputSchema: {
+      inputSchema: z.object({
         groupId: z.string().describe("Group ID to assign the tab to"),
         tabId: z.string().optional().describe("Tab ID to move (defaults to active tab)"),
-      },
+      }),
     },
     async ({ groupId, tabId }) =>
       withAction(runtime, tabManager, "assign_to_group", { groupId, tabId }, async () =>
@@ -69,9 +69,9 @@ export function registerGroupTools(
     {
       title: "Remove Tab from Group",
       description: "Ungroup a tab. Defaults to the active tab.",
-      inputSchema: {
+      inputSchema: z.object({
         tabId: z.string().optional().describe("Tab ID to ungroup (defaults to active tab)"),
-      },
+      }),
     },
     async ({ tabId }) =>
       withAction(runtime, tabManager, "remove_from_group", { tabId }, async () =>
@@ -84,9 +84,9 @@ export function registerGroupTools(
     {
       title: "Toggle Group Collapsed",
       description: "Collapse or expand a tab group.",
-      inputSchema: {
+      inputSchema: z.object({
         groupId: z.string().describe("Group ID to toggle"),
-      },
+      }),
     },
     async ({ groupId }) =>
       withAction(runtime, tabManager, "toggle_group", { groupId }, async () =>
@@ -99,10 +99,10 @@ export function registerGroupTools(
     {
       title: "Set Group Color",
       description: "Change the color of a tab group.",
-      inputSchema: {
+      inputSchema: z.object({
         groupId: z.string().describe("Group ID"),
         color: TabGroupColorSchema.describe("New color"),
-      },
+      }),
     },
     async ({ groupId, color }) =>
       withAction(runtime, tabManager, "set_group_color", { groupId, color }, async () =>

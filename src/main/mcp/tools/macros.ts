@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import { clickResolvedSelector } from "../../ai/page-actions/navigation";
@@ -22,7 +22,7 @@ export function registerMacroTools(
       title: "Fill Form",
       description:
         "Fill multiple form fields at once. Provide a map of field identifiers to values. Fields are matched by index, name, label, or placeholder. Much faster than calling type for each field individually.",
-      inputSchema: {
+      inputSchema: z.object({
         fields: z
           .array(
             z.object({
@@ -53,7 +53,7 @@ export function registerMacroTools(
           .boolean()
           .optional()
           .describe("Submit the form after filling (default false)"),
-      },
+      }),
     },
     async ({ fields, submit }) => {
       const tab = tabManager.getActiveTab();
@@ -95,7 +95,7 @@ export function registerMacroTools(
       title: "Login",
       description:
         "Compound action: navigate to a login page, fill credentials, and submit. Handles the full login flow in one call.",
-      inputSchema: {
+      inputSchema: z.object({
         url: z
           .string()
           .optional()
@@ -120,7 +120,7 @@ export function registerMacroTools(
           .describe(
             "CSS selector for submit button (auto-detected if omitted)",
           ),
-      },
+      }),
     },
     async ({
       url,
@@ -221,13 +221,13 @@ export function registerMacroTools(
       title: "Search",
       description:
         "Compound action: find a search box on the current page, type a query, and submit. Returns the resulting page state.",
-      inputSchema: {
+      inputSchema: z.object({
         query: z.string().describe("Search query text"),
         selector: z
           .string()
           .optional()
           .describe("CSS selector for search input (auto-detected if omitted)"),
-      },
+      }),
     },
     async ({ query, selector }) => {
       const tab = tabManager.getActiveTab();
@@ -324,7 +324,7 @@ export function registerMacroTools(
       title: "Paginate",
       description:
         "Navigate to the next or previous page of results. Auto-detects pagination controls.",
-      inputSchema: {
+      inputSchema: z.object({
         direction: z.enum(["next", "prev"]).describe("Pagination direction"),
         selector: z
           .string()
@@ -332,7 +332,7 @@ export function registerMacroTools(
           .describe(
             "CSS selector for the pagination link (auto-detected if omitted)",
           ),
-      },
+      }),
     },
     async ({ direction, selector }) => {
       const tab = tabManager.getActiveTab();
