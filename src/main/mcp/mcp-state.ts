@@ -1,11 +1,16 @@
 import http from "node:http";
+import type { McpHttpHandler } from "@modelcontextprotocol/server";
+
+export interface McpRuntimeHandle {
+  httpServer: http.Server;
+  mcpHandler: McpHttpHandler;
+  authToken: string;
+}
 
 export interface McpRuntimeState {
-  httpServer: http.Server | null;
-  authToken: string | null;
+  active: McpRuntimeHandle | null;
 }
 
 export const mcpRuntimeState: McpRuntimeState = {
-  httpServer: null,
-  authToken: null,
+  active: null,
 };

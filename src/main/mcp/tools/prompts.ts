@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { createLogger } from "../../../shared/logger";
 import type { AgentRuntime } from "../../agent/runtime";
 import { detectPageType, type PageType } from "../../ai/context-builder";

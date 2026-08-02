@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import type { TabManager } from "../../tabs/tab-manager";
@@ -15,10 +15,10 @@ export function registerSessionTools(
     {
       title: "Create Checkpoint",
       description: "Capture the current session as a named checkpoint.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().optional().describe("Optional checkpoint name"),
         note: z.string().optional().describe("Optional note"),
-      },
+      }),
     },
     async ({ name, note }) =>
       withAction(
@@ -38,10 +38,10 @@ export function registerSessionTools(
     {
       title: "Restore Checkpoint",
       description: "Restore a saved checkpoint by ID or exact name.",
-      inputSchema: {
+      inputSchema: z.object({
         checkpointId: z.string().optional().describe("Checkpoint ID"),
         name: z.string().optional().describe("Exact checkpoint name"),
-      },
+      }),
     },
     async ({ checkpointId, name }) =>
       withAction(
@@ -69,9 +69,9 @@ export function registerSessionTools(
       title: "Save Session",
       description:
         "Persist the current cookies, localStorage, and tab layout under a reusable session name.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().describe("Session name such as github-logged-in"),
-      },
+      }),
     },
     async ({ name }) =>
       withAction(runtime, tabManager, "save_session", { name }, async () => {
@@ -89,9 +89,9 @@ export function registerSessionTools(
       title: "Load Session",
       description:
         "Load a previously saved named session, restoring cookies, localStorage, and saved tabs.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().describe("Previously saved session name"),
-      },
+      }),
     },
     async ({ name }) =>
       withAction(runtime, tabManager, "load_session", { name }, async () => {
@@ -128,9 +128,9 @@ export function registerSessionTools(
     {
       title: "Delete Session",
       description: "Delete a previously saved named browser session.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().describe("Saved session name to delete"),
-      },
+      }),
     },
     async ({ name }) =>
       withAction(runtime, tabManager, "delete_session", { name }, async () =>

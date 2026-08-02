@@ -14,6 +14,7 @@ Vessel is designed to act as the browser runtime that your external agent harnes
 ## Integration Notes
 
 - Vessel exposes browser control to external agents through its local MCP server
+- The endpoint serves both legacy MCP revisions and the modern `2026-07-28` protocol revision; modern clients can use `server/discover` while older clients continue to use `initialize`
 - The default MCP port is `3100`
 - Harnesses should treat Vessel as the persistent, human-visible browser rather than launching a separate browser session
 - Approval policy is controlled live from the Supervisor panel rather than a separate global settings screen
@@ -95,7 +96,7 @@ The extraction output can distinguish:
 
 ### Stdio proxy (recommended)
 
-The stdio proxy resolves the auth token from `mcp-auth.json` at connection time, so you never need to copy tokens manually. This is the recommended approach for Claude Code, Claude Desktop, and any MCP client that supports command-based servers:
+The stdio proxy resolves the auth token from `mcp-auth.json` at connection time, so you never need to copy tokens manually. It preserves both legacy and `2026-07-28` protocol negotiation and request headers. This is the recommended approach for Claude Code, Claude Desktop, and any MCP client that supports command-based servers:
 
 ```json
 {

@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import { extractContent } from "../../content/extractor";
@@ -23,7 +23,7 @@ export function registerMemoryTools(
       title: "Create Memory Note",
       description:
         "Write a markdown note into the configured Obsidian vault for research notes, breadcrumbs, or synthesis.",
-      inputSchema: {
+      inputSchema: z.object({
         title: z.string().describe("Title of the note"),
         body: z.string().describe("Markdown body for the note"),
         folder: z
@@ -36,7 +36,7 @@ export function registerMemoryTools(
           .array(z.string())
           .optional()
           .describe("Optional tags to store in frontmatter"),
-      },
+      }),
     },
     async ({ title, body, folder, tags }) => {
       return withAction(
@@ -58,7 +58,7 @@ export function registerMemoryTools(
       title: "Append Memory Note",
       description:
         "Append markdown content to an existing note in the configured Obsidian vault.",
-      inputSchema: {
+      inputSchema: z.object({
         note_path: z
           .string()
           .describe("Relative path to an existing note inside the vault"),
@@ -67,7 +67,7 @@ export function registerMemoryTools(
           .string()
           .optional()
           .describe("Optional section heading to add before the content"),
-      },
+      }),
     },
     async ({ note_path, content, heading }) => {
       return withAction(
@@ -93,7 +93,7 @@ export function registerMemoryTools(
       title: "List Memory Notes",
       description:
         "List recent markdown notes in the configured Obsidian vault.",
-      inputSchema: {
+      inputSchema: z.object({
         folder: z
           .string()
           .optional()
@@ -105,7 +105,7 @@ export function registerMemoryTools(
           .max(200)
           .optional()
           .describe("Maximum number of notes to return"),
-      },
+      }),
     },
     async ({ folder, limit }) => {
       return withAction(
@@ -135,7 +135,7 @@ export function registerMemoryTools(
       title: "Search Memory Notes",
       description:
         "Search markdown notes in the configured Obsidian vault by title, path, body, and optional tags.",
-      inputSchema: {
+      inputSchema: z.object({
         query: z.string().describe("Search query"),
         folder: z
           .string()
@@ -152,7 +152,7 @@ export function registerMemoryTools(
           .max(100)
           .optional()
           .describe("Maximum number of matching notes to return"),
-      },
+      }),
     },
     async ({ query, folder, tags, limit }) => {
       return withAction(
@@ -182,7 +182,7 @@ export function registerMemoryTools(
       title: "Capture Page To Memory",
       description:
         "Capture the current page into the configured Obsidian vault as a markdown note with URL, excerpt, and content snapshot.",
-      inputSchema: {
+      inputSchema: z.object({
         title: z.string().optional().describe("Optional note title override"),
         folder: z
           .string()
@@ -200,7 +200,7 @@ export function registerMemoryTools(
           .array(z.string())
           .optional()
           .describe("Optional tags to store in frontmatter"),
-      },
+      }),
     },
     async ({ title, folder, summary, note, tags }) => {
       const tab = tabManager.getActiveTab();

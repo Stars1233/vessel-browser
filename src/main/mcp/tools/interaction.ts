@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import type { TabManager } from "../../tabs/tab-manager";
@@ -42,7 +42,7 @@ export function registerInteractionTools(
       title: "Click Element",
       description:
         "Click an element on the page by its index number, CSS selector, or visible text.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
@@ -52,7 +52,7 @@ export function registerInteractionTools(
           .string()
           .optional()
           .describe("Visible label, link text, button text, or section name to match"),
-      },
+      }),
     },
     async ({ index, selector, text }) => {
       const tab = tabManager.getActiveTab();
@@ -74,13 +74,13 @@ export function registerInteractionTools(
       title: "Hover Element",
       description:
         "Move the mouse pointer over an element to trigger hover states, tooltips, or dropdown menus.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
           .describe("Element index from the page content listing"),
         selector: z.string().optional().describe("CSS selector as fallback"),
-      },
+      }),
     },
     async ({ index, selector }) => {
       const tab = tabManager.getActiveTab();
@@ -108,13 +108,13 @@ export function registerInteractionTools(
       title: "Focus Element",
       description:
         "Focus an input, button, or interactive element. Useful before pressing keys or to trigger focus-dependent UI.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
           .describe("Element index from the page content listing"),
         selector: z.string().optional().describe("CSS selector as fallback"),
-      },
+      }),
     },
     async ({ index, selector }) => {
       const tab = tabManager.getActiveTab();
@@ -142,7 +142,7 @@ export function registerInteractionTools(
       title: "Type Text",
       description:
         "Type text into an input field or textarea. Clears existing content first.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
@@ -155,7 +155,7 @@ export function registerInteractionTools(
           .describe(
             '"default" sets value directly and fires input+change events. "keystroke" simulates character-by-character key events for apps that validate on keypress.',
           ),
-      },
+      }),
     },
     async ({ index, selector, text, mode }) => {
       const tab = tabManager.getActiveTab();
@@ -189,7 +189,7 @@ export function registerInteractionTools(
       title: "Type Text",
       description:
         "Alias for type. Type text into an input field or textarea.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
@@ -202,7 +202,7 @@ export function registerInteractionTools(
           .describe(
             '"default" sets value directly and fires input+change events. "keystroke" simulates character-by-character key events for apps that validate on keypress.',
           ),
-      },
+      }),
     },
     async ({ index, selector, text, mode }) => {
       const tab = tabManager.getActiveTab();
@@ -235,7 +235,7 @@ export function registerInteractionTools(
     {
       title: "Select Option",
       description: "Select an option in a dropdown by label or value.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
@@ -243,7 +243,7 @@ export function registerInteractionTools(
         selector: z.string().optional().describe("CSS selector as fallback"),
         label: z.string().optional().describe("Visible option label"),
         value: z.string().optional().describe("Option value"),
-      },
+      }),
     },
     async ({ index, selector, label, value }) => {
       const tab = tabManager.getActiveTab();
@@ -265,7 +265,7 @@ export function registerInteractionTools(
       title: "Submit Form",
       description:
         "Submit a form using a field index, submit button index, form selector, or button selector.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z
           .number()
           .optional()
@@ -274,7 +274,7 @@ export function registerInteractionTools(
           .string()
           .optional()
           .describe("Form or submit button selector"),
-      },
+      }),
     },
     async ({ index, selector }) => {
       const tab = tabManager.getActiveTab();
@@ -295,11 +295,11 @@ export function registerInteractionTools(
       title: "Press Key",
       description:
         "Press a keyboard key, optionally after focusing an element.",
-      inputSchema: {
+      inputSchema: z.object({
         key: z.string().describe("Keyboard key such as Enter or Escape"),
         index: z.number().optional().describe("Element index to focus first"),
         selector: z.string().optional().describe("CSS selector to focus first"),
-      },
+      }),
     },
     async ({ key, index, selector }) => {
       const tab = tabManager.getActiveTab();
@@ -332,12 +332,12 @@ export function registerInteractionTools(
     {
       title: "Scroll Page",
       description: "Scroll the page up or down.",
-      inputSchema: {
+      inputSchema: z.object({
         direction: z.enum(["up", "down"]).describe("Scroll direction"),
         amount: optionalNumberLikeSchema().describe(
           "Pixels to scroll (default 500)",
         ),
-      },
+      }),
     },
     async ({ direction, amount }) => {
       const tab = tabManager.getActiveTab();
@@ -363,7 +363,7 @@ export function registerInteractionTools(
       title: "Inspect Element",
       description:
         "Inspect one element and its nearest local UI region by index, selector, or visible text.",
-      inputSchema: {
+      inputSchema: z.object({
         index: z.number().optional().describe("Element index to inspect"),
         selector: z.string().optional().describe("CSS selector to inspect"),
         text: z
@@ -374,7 +374,7 @@ export function registerInteractionTools(
           .number()
           .optional()
           .describe("Maximum nearby controls to include (default 8)"),
-      },
+      }),
     },
     async ({ index, selector, text, limit }) => {
       const tab = tabManager.getActiveTab();
@@ -451,14 +451,14 @@ export function registerInteractionTools(
       title: "Clear Overlays",
       description:
         "Work through blocking overlays and modals until the page is unblocked, using overlay-specific heuristics for consent banners and radio-selection dialogs.",
-      inputSchema: {
+      inputSchema: z.object({
         strategy: z
           .enum(["auto", "interactive"])
           .optional()
           .describe(
             'How aggressively to clear overlays. "auto" uses heuristics; "interactive" stops earlier when human judgment may be needed.',
           ),
-      },
+      }),
     },
     async ({ strategy }) => {
       const tab = tabManager.getActiveTab();

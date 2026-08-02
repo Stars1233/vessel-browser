@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, McpServer, type McpHttpHandler } from "@modelcontextprotocol/server";
 import { createLogger } from "../../shared/logger";
 import { errorResult } from "../../shared/result";
 import type { AgentRuntime } from "../agent/runtime";
@@ -22,23 +22,25 @@ import { registerTaskMemoryTools } from "./tools/task-memory";
 import { registerMacroTools } from "./tools/macros";
 import { registerVaultTools } from "./tools/vault";
 import { registerMetricsTools } from "./tools/metrics";
-import {
-  getPersistentMcpAuthToken,
-  writeMcpAuthFile,
-  clearMcpAuthFile,
-} from "./mcp-auth";
+import { getPersistentMcpAuthToken, writeMcpAuthFile, clearMcpAuthFile } from "./mcp-auth";
 import type { McpServerStartResult } from "./mcp-auth";
 import { mcpRuntimeState } from "./mcp-state";
+import type { McpRuntimeHandle } from "./mcp-state";
 
 const logger = createLogger("MCP");
+
+async function closeMcpHandler(handler: McpHttpHandler | null): Promise<void> {
+  try {
+    await handler?.close();
+  } catch (error) {
+    logger.error("Failed to close MCP protocol handler:", error);
+  }
+}
+
 export { getMcpAuthToken, regenerateMcpAuthToken } from "./mcp-auth";
 export type { McpServerStartResult } from "./mcp-auth";
 export { requiresExplicitMcpApproval } from "./mcp-helpers";
-function registerTools(
-  server: McpServer,
-  tabManager: TabManager,
-  runtime: AgentRuntime,
-): void {
+function registerTools(server: McpServer, tabManager: TabManager, runtime: AgentRuntime): void {
   registerPromptTools(server, tabManager, runtime);
   registerGroupTools(server, tabManager, runtime);
   registerHighlightTools(server, tabManager, runtime);
@@ -57,10 +59,7 @@ function registerTools(
   registerMetricsTools(server, tabManager, runtime);
 }
 
-function createMcpServer(
-  tabManager: TabManager,
-  runtime: AgentRuntime,
-): McpServer {
+function createMcpServer(tabManager: TabManager, runtime: AgentRuntime): McpServer {
   const server = new McpServer({
     name: "vessel-browser",
     version: "0.1.0",
@@ -83,7 +82,15 @@ export async function startMcpServer(
     message: `Starting MCP server on port ${port}.`,
   });
 
-  mcpRuntimeState.authToken = await getPersistentMcpAuthToken();
+  const authToken = await getPersistentMcpAuthToken();
+
+  const mcpHandler = createMcpHandler(() => createMcpServer(tabManager, runtime), {
+    legacy: "stateless",
+    onerror: (error) => logger.error("MCP protocol error:", error),
+  });
+  const handleMcpRequest = toNodeHandler(mcpHandler, {
+    onerror: (error) => logger.error("MCP HTTP adapter error:", error),
+  });
 
   return new Promise((resolve) => {
     const server = http.createServer(async (req, res) => {
@@ -97,18 +104,19 @@ export async function startMcpServer(
 
       // Only allow CORS from localhost origins (defense-in-depth alongside auth token)
       const origin = req.headers.origin;
-      if (
-        origin &&
-        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
-      ) {
+      if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader(
-          "Access-Control-Allow-Methods",
-          "POST, GET, DELETE, OPTIONS",
-        );
+        res.setHeader("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
         res.setHeader(
           "Access-Control-Allow-Headers",
-          "Content-Type, mcp-session-id, Authorization",
+          [
+            "Content-Type",
+            "Authorization",
+            "MCP-Protocol-Version",
+            "Mcp-Method",
+            "Mcp-Name",
+            "Mcp-Session-Id",
+          ].join(", "),
         );
       }
 
@@ -121,12 +129,11 @@ export async function startMcpServer(
       // Validate bearer token on all non-OPTIONS requests (constant-time
       // comparison to prevent timing side-channel attacks on persistent tokens).
       const authHeader = req.headers.authorization;
-      const expected = `Bearer ${mcpRuntimeState.authToken}`;
+      const expected = `Bearer ${runtimeHandle.authToken}`;
       const headerBuf = Buffer.from(authHeader ?? "");
       const expectedBuf = Buffer.from(expected);
       const tokenValid =
-        headerBuf.length === expectedBuf.length &&
-        crypto.timingSafeEqual(headerBuf, expectedBuf);
+        headerBuf.length === expectedBuf.length && crypto.timingSafeEqual(headerBuf, expectedBuf);
       if (!authHeader || !tokenValid) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Unauthorized — missing or invalid bearer token" }));
@@ -134,12 +141,7 @@ export async function startMcpServer(
       }
 
       try {
-        const mcpServer = createMcpServer(tabManager, runtime);
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: undefined,
-        });
-        await mcpServer.connect(transport);
-        await transport.handleRequest(req, res);
+        await handleMcpRequest(req, res);
       } catch (error) {
         logger.error("Error handling request:", error);
         if (!res.headersSent) {
@@ -152,6 +154,11 @@ export async function startMcpServer(
         }
       }
     });
+    const runtimeHandle: McpRuntimeHandle = {
+      httpServer: server,
+      mcpHandler,
+      authToken,
+    };
 
     let settled = false;
     const finish = (result: McpServerStartResult) => {
@@ -166,6 +173,7 @@ export async function startMcpServer(
           ? `Port ${port} is already in use. MCP server not started.`
           : error.message;
       logger.error("Server error:", error);
+      await closeMcpHandler(mcpHandler);
       await clearMcpAuthFile();
       setMcpHealth({
         configuredPort: port,
@@ -174,22 +182,23 @@ export async function startMcpServer(
         status: "error",
         message,
       });
-      if (mcpRuntimeState.httpServer === server) {
-        mcpRuntimeState.httpServer = null;
+      if (mcpRuntimeState.active === runtimeHandle) {
+        mcpRuntimeState.active = null;
       }
-      finish(errorResult(message, {
-        configuredPort: port,
-        activePort: null,
-        endpoint: null,
-        authToken: null,
-      }));
+      finish(
+        errorResult(message, {
+          configuredPort: port,
+          activePort: null,
+          endpoint: null,
+          authToken: null,
+        }),
+      );
     });
 
     server.listen(port, "127.0.0.1", async () => {
-      mcpRuntimeState.httpServer = server;
+      mcpRuntimeState.active = runtimeHandle;
       const address = server.address();
-      const actualPort =
-        address && typeof address === "object" ? address.port : port;
+      const actualPort = address && typeof address === "object" ? address.port : port;
       const endpoint = `http://127.0.0.1:${actualPort}/mcp`;
       setMcpHealth({
         configuredPort: port,
@@ -198,26 +207,25 @@ export async function startMcpServer(
         status: "ready",
         message: `MCP server listening on ${endpoint}.`,
       });
-      if (process.env.VESSEL_DEBUG_MCP === '1' || process.env.VESSEL_DEBUG_MCP === 'true') {
+      if (process.env.VESSEL_DEBUG_MCP === "1" || process.env.VESSEL_DEBUG_MCP === "true") {
         logger.info(`Server listening on ${endpoint} (auth enabled)`);
       }
-      if (mcpRuntimeState.authToken) {
-        await writeMcpAuthFile(endpoint, mcpRuntimeState.authToken);
-      }
+      await writeMcpAuthFile(endpoint, runtimeHandle.authToken);
       finish({
         ok: true,
         configuredPort: port,
         activePort: actualPort,
         endpoint,
-        authToken: mcpRuntimeState.authToken,
+        authToken: runtimeHandle.authToken,
       });
     });
   });
 }
 
 export async function stopMcpServer(): Promise<void> {
-  const server = mcpRuntimeState.httpServer;
-  if (!server) {
+  const active = mcpRuntimeState.active;
+  mcpRuntimeState.active = null;
+  if (!active) {
     await clearMcpAuthFile();
     setMcpHealth({
       activePort: null,
@@ -228,11 +236,10 @@ export async function stopMcpServer(): Promise<void> {
     return;
   }
 
-  mcpRuntimeState.httpServer = null;
-  mcpRuntimeState.authToken = null;
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve());
+  const serverClosed = new Promise<void>((resolve) => {
+    active.httpServer.close(() => resolve());
   });
+  await Promise.all([serverClosed, closeMcpHandler(active.mcpHandler)]);
   await clearMcpAuthFile();
   setMcpHealth({
     activePort: null,
@@ -240,7 +247,7 @@ export async function stopMcpServer(): Promise<void> {
     status: "stopped",
     message: "MCP server is stopped.",
   });
-  if (process.env.VESSEL_DEBUG_MCP === '1' || process.env.VESSEL_DEBUG_MCP === 'true') {
+  if (process.env.VESSEL_DEBUG_MCP === "1" || process.env.VESSEL_DEBUG_MCP === "true") {
     logger.info("Server stopped");
   }
 }

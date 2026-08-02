@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type {
   AgentRuntime,
@@ -494,7 +494,7 @@ export function registerDevTools(
       title: "DevTools: Get Console Logs",
       description:
         "Get console log entries captured from the active tab. Returns a rolling buffer of recent console.log, console.warn, console.error, etc. calls. Automatically starts capturing on first use.",
-      inputSchema: {
+      inputSchema: z.object({
         level: z
           .enum(["log", "warning", "error", "info", "debug", "verbose"])
           .optional()
@@ -507,7 +507,7 @@ export function registerDevTools(
           .string()
           .optional()
           .describe("Filter entries containing this text (case-insensitive)"),
-      },
+      }),
     },
     async ({ level, limit, search }) => {
       return withDevToolsAction(
@@ -559,7 +559,7 @@ export function registerDevTools(
       title: "DevTools: Get Network Log",
       description:
         "Get captured network requests/responses from the active tab. Returns method, URL, status, timing, headers, and size. Automatically starts capturing on first use.",
-      inputSchema: {
+      inputSchema: z.object({
         url_pattern: z
           .string()
           .optional()
@@ -580,7 +580,7 @@ export function registerDevTools(
           .number()
           .optional()
           .describe("Maximum number of entries to return (default: all)"),
-      },
+      }),
     },
     async ({ url_pattern, method, status_min, status_max, limit }) => {
       return withDevToolsAction(
@@ -615,11 +615,11 @@ export function registerDevTools(
       title: "DevTools: Get Network Response Body",
       description:
         "Get the response body for a specific network request by its request ID. Use vessel_devtools_network_log first to find the request ID.",
-      inputSchema: {
+      inputSchema: z.object({
         request_id: z
           .string()
           .describe("The requestId from a network log entry"),
-      },
+      }),
     },
     async ({ request_id }) => {
       return withDevToolsAction(
@@ -674,13 +674,13 @@ export function registerDevTools(
       title: "DevTools: Query DOM",
       description:
         "Query the DOM of the active tab using a CSS selector. Returns matching elements with their attributes, node type, and optionally their HTML content. Limited to 50 results.",
-      inputSchema: {
+      inputSchema: z.object({
         selector: z.string().describe("CSS selector to query"),
         include_html: z
           .boolean()
           .optional()
           .describe("Include outerHTML of matched elements (default: false)"),
-      },
+      }),
     },
     async ({ selector, include_html }) => {
       return withDevToolsAction(
@@ -708,7 +708,7 @@ export function registerDevTools(
       title: "DevTools: Get Computed Styles",
       description:
         "Get computed CSS styles for an element matching a CSS selector. Optionally filter to specific properties.",
-      inputSchema: {
+      inputSchema: z.object({
         selector: z.string().describe("CSS selector for the target element"),
         properties: z
           .array(z.string())
@@ -716,7 +716,7 @@ export function registerDevTools(
           .describe(
             'Specific CSS properties to return (e.g., ["color", "font-size", "display"]). Omit for all properties.',
           ),
-      },
+      }),
     },
     async ({ selector, properties }) => {
       return withDevToolsAction(
@@ -742,14 +742,14 @@ export function registerDevTools(
       title: "DevTools: Modify DOM Attribute",
       description:
         "Set or remove an HTML attribute on an element matching a CSS selector. This is a dangerous action that modifies the page.",
-      inputSchema: {
+      inputSchema: z.object({
         selector: z.string().describe("CSS selector for the target element"),
         attribute: z.string().describe("Attribute name to set or remove"),
         value: z
           .string()
           .nullable()
           .describe("Attribute value to set, or null to remove the attribute"),
-      },
+      }),
     },
     async ({ selector, attribute, value }) => {
       return withDevToolsAction(
@@ -775,11 +775,11 @@ export function registerDevTools(
       title: "DevTools: Execute JavaScript",
       description:
         "Execute a JavaScript expression in the context of the active tab's page via the Runtime.evaluate CDP method. Supports async/await. This is a dangerous action — it can modify page state.",
-      inputSchema: {
+      inputSchema: z.object({
         expression: z
           .string()
           .describe("JavaScript expression to evaluate in the page context"),
-      },
+      }),
     },
     async ({ expression }) => {
       return withDevToolsAction(
@@ -810,11 +810,11 @@ export function registerDevTools(
       title: "DevTools: Get Storage",
       description:
         "Read browser storage for the active tab's origin. Supports localStorage, sessionStorage, cookies, and IndexedDB database listing.",
-      inputSchema: {
+      inputSchema: z.object({
         type: z
           .enum(["localStorage", "sessionStorage", "cookie", "indexedDB"])
           .describe("Storage type to read"),
-      },
+      }),
     },
     async ({ type }) => {
       return withDevToolsAction(
@@ -841,7 +841,7 @@ export function registerDevTools(
       title: "DevTools: Set Storage",
       description:
         "Set or remove a key in localStorage or sessionStorage for the active tab. This is a dangerous action that modifies page state.",
-      inputSchema: {
+      inputSchema: z.object({
         type: z
           .enum(["localStorage", "sessionStorage"])
           .describe("Storage type to modify"),
@@ -850,7 +850,7 @@ export function registerDevTools(
           .string()
           .nullable()
           .describe("Value to set, or null to remove the key"),
-      },
+      }),
     },
     async ({ type, key, value }) => {
       return withDevToolsAction(
@@ -902,7 +902,7 @@ export function registerDevTools(
       title: "DevTools: Get Errors",
       description:
         "Get captured JavaScript errors and unhandled promise rejections from the active tab. Automatically starts capturing on first use.",
-      inputSchema: {
+      inputSchema: z.object({
         type: z
           .enum(["exception", "unhandled-rejection"])
           .optional()
@@ -911,7 +911,7 @@ export function registerDevTools(
           .number()
           .optional()
           .describe("Maximum number of entries to return (default: all)"),
-      },
+      }),
     },
     async ({ type, limit }) => {
       return withDevToolsAction(

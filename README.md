@@ -262,6 +262,7 @@ Vessel is designed to act as the browser runtime that your external agent harnes
 Notes:
 
 - Vessel exposes browser control to external agents through its local MCP server
+- The MCP endpoint supports both legacy clients and the modern `2026-07-28` protocol revision, including `server/discover`
 - The default MCP port is `3100`
 - Hermes Agent and OpenClaw should treat Vessel as the persistent, human-visible browser rather than launching their own separate browser session
 - Vessel supports a built-in Chat tab with configurable AI provider; open Settings (`Ctrl+,`) and enable Chat Assistant to set a provider and model
@@ -401,7 +402,7 @@ Stdio proxy MCP config (recommended — resolves auth automatically):
 }
 ```
 
-The stdio proxy reads the bearer token from `~/.config/vessel/mcp-auth.json` at connection time, so no manual token management is needed.
+The stdio proxy reads the bearer token from `~/.config/vessel/mcp-auth.json` at connection time and preserves both legacy and `2026-07-28` protocol negotiation, so no manual token management is needed.
 Vessel must already be running when your MCP client connects, and `~/.config/vessel/mcp-auth.json` must exist from install or first launch.
 
 Generic HTTP MCP config (requires copying the token manually):

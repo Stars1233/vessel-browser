@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AgentRuntime } from "../../agent/runtime";
 import type { TabManager } from "../../tabs/tab-manager";
@@ -66,7 +66,7 @@ export function registerNavigationTools(
       title: "Navigate",
       description:
         "Navigate the active browser tab to a URL. Use postBody to submit data via POST request (e.g. form submissions).",
-      inputSchema: {
+      inputSchema: z.object({
         url: z.string().describe("The URL to navigate to"),
         postBody: z
           .record(z.string(), z.string())
@@ -74,7 +74,7 @@ export function registerNavigationTools(
           .describe(
             "Optional form fields to submit via POST (application/x-www-form-urlencoded). Only supported on http/https URLs.",
           ),
-      },
+      }),
     },
     async ({ url, postBody }) => {
       const tab = tabManager.getActiveTab();
@@ -117,9 +117,9 @@ export function registerNavigationTools(
       title: "Web Search",
       description:
         "Search the open web using the configured default search engine.",
-      inputSchema: {
+      inputSchema: z.object({
         query: z.string().describe("Web search query text"),
-      },
+      }),
     },
     async ({ query }) => {
       const tab = tabManager.getActiveTab();
@@ -212,12 +212,12 @@ export function registerNavigationTools(
     {
       title: "Create Tab",
       description: "Open a new browser tab, optionally navigating to a URL.",
-      inputSchema: {
+      inputSchema: z.object({
         url: z
           .string()
           .optional()
           .describe("URL to open (defaults to about:blank)"),
-      },
+      }),
     },
     async ({ url }) =>
       withAction(runtime, tabManager, "create_tab", { url }, async () => {
@@ -236,13 +236,13 @@ export function registerNavigationTools(
       title: "Switch Tab",
       description:
         "Switch to a different browser tab by ID or title/URL match.",
-      inputSchema: {
+      inputSchema: z.object({
         tabId: z.string().optional().describe("The tab ID to switch to"),
         match: z
           .string()
           .optional()
           .describe("Case-insensitive match against title or URL"),
-      },
+      }),
     },
     async ({ tabId, match }) =>
       withAction(
@@ -267,9 +267,9 @@ export function registerNavigationTools(
     {
       title: "Close Tab",
       description: "Close a browser tab by its ID.",
-      inputSchema: {
+      inputSchema: z.object({
         tabId: z.string().describe("The tab ID to close"),
-      },
+      }),
     },
     async ({ tabId }) =>
       withAction(runtime, tabManager, "close_tab", { tabId }, async () => {
@@ -283,7 +283,7 @@ export function registerNavigationTools(
     {
       title: "Wait For",
       description: "Wait for text or a selector to appear on the current page.",
-      inputSchema: {
+      inputSchema: z.object({
         text: z.string().optional().describe("Text expected in the page body"),
         selector: z
           .string()
@@ -293,7 +293,7 @@ export function registerNavigationTools(
           .number()
           .optional()
           .describe("Maximum wait in milliseconds"),
-      },
+      }),
     },
     async ({ text, selector, timeoutMs }) => {
       const tab = tabManager.getActiveTab();
