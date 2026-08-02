@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
 
 import {
   createBrowserCommands,
@@ -152,6 +155,40 @@ test("browser command palette omits hidden keyboard-only commands", () => {
   assert.ok(ids.includes("reload"));
   assert.ok(!ids.includes("find-page"));
   assert.ok(!ids.includes("browser-command-palette"));
+});
+
+test("MCP title-bar indicator uses the shared settings state transition", () => {
+  const titleBarPath = path.resolve(
+    "src/renderer/src/components/chrome/TitleBar.tsx",
+  );
+  const sourceText = fs.readFileSync(titleBarPath, "utf8");
+  const sourceFile = ts.createSourceFile(
+    titleBarPath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let handler: ts.ArrowFunction | undefined;
+
+  const findHandler = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "handleMcpClick" &&
+      node.initializer &&
+      ts.isArrowFunction(node.initializer)
+    ) {
+      handler = node.initializer;
+    }
+    ts.forEachChild(node, findHandler);
+  };
+  findHandler(sourceFile);
+
+  assert.ok(handler, "expected the MCP click handler to exist");
+  const handlerSource = handler.getText(sourceFile);
+  assert.match(handlerSource, /\bopenSettings\s*\(/);
+  assert.doesNotMatch(handlerSource, /setSettingsVisibility\s*\(/);
 });
 
 test("shared sidebar settings sanitizers clamp persisted detached bounds", () => {

@@ -1,8 +1,10 @@
 import { createSignal, onCleanup, onMount, type Component } from 'solid-js';
 import type { RuntimeHealthState } from '../../../../shared/types';
+import { useUI } from '../../stores/ui';
 import './chrome.css';
 
 const TitleBar: Component<{ onOpenDownloads?: () => void }> = (props) => {
+  const { openSettings } = useUI();
   const isPrivateWindow = new URLSearchParams(window.location.search).get("private") === "1";
   const [mcpStatus, setMcpStatus] = createSignal<'ready' | 'error' | 'starting' | 'stopped'>('starting');
   const [mcpTooltip, setMcpTooltip] = createSignal('MCP: starting...');
@@ -35,7 +37,7 @@ const TitleBar: Component<{ onOpenDownloads?: () => void }> = (props) => {
 
   const handleMcpClick = () => {
     if (isPrivateWindow) return;
-    window.vessel.ui.setSettingsVisibility(true);
+    void openSettings();
   };
 
   return (
