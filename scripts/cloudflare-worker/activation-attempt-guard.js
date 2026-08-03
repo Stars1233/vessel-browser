@@ -1,4 +1,11 @@
-const MAX_ACTIVATION_CODE_ATTEMPTS = 5;
+import {
+  applyActivationAttempt,
+  applyAiBudget,
+  applyRateLimit,
+} from "./serialized-guard-policies.js";
+
+const ACTIVATION_ACTIONS = new Set(["check", "invalid", "redeem"]);
+const AI_BUDGET_ACTIONS = new Set(["ai-get", "ai-reserve", "ai-reconcile"]);
 
 export class ActivationAttemptGuard {
   constructor(state) {
@@ -18,40 +25,18 @@ export class ActivationAttemptGuard {
     }
 
     const action = body?.action;
-    if (action !== "check" && action !== "invalid" && action !== "redeem") {
-      return Response.json({ error: "Invalid activation guard action" }, { status: 400 });
+    let result;
+    if (ACTIVATION_ACTIONS.has(action)) {
+      result = await applyActivationAttempt(this.storage, body);
+    } else if (action === "rate-limit") {
+      result = await applyRateLimit(this.storage, body);
+    } else if (AI_BUDGET_ACTIONS.has(action)) {
+      result = await applyAiBudget(this.storage, body);
+    } else {
+      return Response.json({ error: "Invalid guard action" }, { status: 400 });
     }
 
-    const result = await this.storage.transaction(async (transaction) => {
-      const stored = await transaction.get("challenge");
-      const challenge = stored && typeof stored === "object"
-        ? stored
-        : { attempts: 0, redeemed: false };
-
-      if (challenge.redeemed) {
-        return { status: "redeemed", attempts: challenge.attempts || 0 };
-      }
-      if (action === "redeem") {
-        challenge.redeemed = true;
-        await transaction.put("challenge", challenge);
-        return { status: "redeemed", attempts: challenge.attempts || 0 };
-      }
-      if ((challenge.attempts || 0) >= MAX_ACTIVATION_CODE_ATTEMPTS) {
-        return { status: "limited", attempts: challenge.attempts };
-      }
-      if (action === "invalid") {
-        challenge.attempts = (challenge.attempts || 0) + 1;
-        await transaction.put("challenge", challenge);
-        return { status: "recorded", attempts: challenge.attempts };
-      }
-      return { status: "ready", attempts: challenge.attempts || 0 };
-    });
-
-    const expiresAt = Number(body?.expiresAt);
-    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-      await this.storage.setAlarm(expiresAt);
-    }
-    return Response.json(result);
+    return Response.json(result, { status: result?.error ? 400 : 200 });
   }
 
   async alarm() {

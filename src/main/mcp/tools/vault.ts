@@ -10,6 +10,9 @@ import * as humanVault from "../../vault/human-vault";
 import * as vaultManager from "../../vault/manager";
 import { trackVaultAction } from "../../telemetry/posthog";
 import { asErrorTextResponse, asNoActiveTabResponse, asTextResponse, getPremiumToolGateResponse } from "../mcp-helpers";
+import { createVaultFillTargetGuard } from "./vault-fill-target";
+
+export { createVaultFillTargetGuard } from "./vault-fill-target";
 
 const logger = createLogger("MCPVaultTools");
 
@@ -133,7 +136,7 @@ export function registerVaultTools(
       const wc = tab.view.webContents;
       let hostname: string;
       try {
-        hostname = new URL(tab.state.url).hostname;
+        hostname = new URL(wc.getURL() || tab.state.url).hostname;
       } catch (err) {
         logger.warn("Failed to parse active tab URL for vault_login:", err);
         return asErrorTextResponse("Could not parse active tab URL");
@@ -159,74 +162,75 @@ export function registerVaultTools(
         );
       }
 
-      // Request user consent
-      const consent = await requestConsent({
-        credentialLabel: match.label,
-        username: match.username,
-        domain: hostname,
-      });
+      const fillTarget = createVaultFillTargetGuard(tabManager, tab);
+      const fill = await fillTarget.runAfterApproval(
+        async () => {
+          const consent = await requestConsent({
+            credentialLabel: match.label,
+            username: match.username,
+            domain: hostname,
+          });
+          appendAuditEntry({
+            timestamp: new Date().toISOString(),
+            credentialId: match.id,
+            credentialLabel: match.label,
+            domain: hostname,
+            action: "login_fill",
+            approved: consent.approved,
+          });
+          return consent.approved;
+        },
+        async (target) => {
+          // Get raw credentials only after approval is bound to the captured document.
+          const creds = vaultManager.getCredential(match.id);
+          if (!creds) return asErrorTextResponse("Credential not found in vault");
 
-      appendAuditEntry({
-        timestamp: new Date().toISOString(),
-        credentialId: match.id,
-        credentialLabel: match.label,
-        domain: hostname,
-        action: "login_fill",
-        approved: consent.approved,
-      });
+          const results: string[] = [];
+          if (username_index != null) {
+            const usernameResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${username_index}, "value", ${JSON.stringify(creds.username)}) || "Error: interactByIndex not available"`,
+            );
+            results.push(`Username: ${usernameResult}`);
+          }
+          if (password_index != null) {
+            const passwordResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${password_index}, "value", ${JSON.stringify(creds.password)}) || "Error: interactByIndex not available"`,
+            );
+            results.push(`Password: ${passwordResult.replace(/Typed into:.*/, "Typed into: [password field]")}`);
+          }
 
-      if (!consent.approved) {
+          vaultManager.recordUsage(match.id);
+          trackVaultAction("login_fill");
+
+          if (submit_after && submit_index != null) {
+            const submitResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${submit_index}, "click") || "Error: interactByIndex not available"`,
+            );
+            results.push(`Submit: ${submitResult}`);
+          }
+
+          return asTextResponse(
+            [
+              `Login form filled for ${hostname} using credential "${match.label}".`,
+              ...results,
+              "",
+              "Note: Credential values were filled directly into the page. They are NOT included in this response.",
+            ].join("\n"),
+          );
+        },
+      );
+
+      if (fill.status === "denied") {
         return asTextResponse(
           `User denied credential access for ${hostname}. The agent should not retry without being asked.`,
         );
       }
-
-      // Get raw credentials (NEVER sent to AI — used only for form fill)
-      const creds = vaultManager.getCredential(match.id);
-      if (!creds) {
-        return asErrorTextResponse("Credential not found in vault");
-      }
-
-      // Fill username field
-      const results: string[] = [];
-      if (username_index != null) {
-        const usernameResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${username_index}, "value", ${JSON.stringify(creds.username)}) || "Error: interactByIndex not available"`,
+      if (fill.status === "changed") {
+        return asErrorTextResponse(
+          "The page changed while credential approval was pending. Refusing to fill credentials.",
         );
-        results.push(`Username: ${usernameResult}`);
       }
-
-      // Fill password field
-      if (password_index != null) {
-        const passwordResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${password_index}, "value", ${JSON.stringify(creds.password)}) || "Error: interactByIndex not available"`,
-        );
-        results.push(`Password: ${passwordResult.replace(/Typed into:.*/, "Typed into: [password field]")}`);
-      }
-
-      // Record usage
-      vaultManager.recordUsage(match.id);
-      trackVaultAction("login_fill");
-
-      // Optionally submit
-      if (submit_after && submit_index != null) {
-        const submitResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${submit_index}, "click") || "Error: interactByIndex not available"`,
-        );
-        results.push(`Submit: ${submitResult}`);
-      }
-
-      // Clear credential references from this scope
-      // (they exist briefly in memory only during the fill)
-
-      return asTextResponse(
-        [
-          `Login form filled for ${hostname} using credential "${match.label}".`,
-          ...results,
-          "",
-          "Note: Credential values were filled directly into the page. They are NOT included in this response.",
-        ].join("\n"),
-      );
+      return fill.value;
     },
   );
 
@@ -268,7 +272,7 @@ export function registerVaultTools(
       const wc = tab.view.webContents;
       let hostname: string;
       try {
-        hostname = new URL(tab.state.url).hostname;
+        hostname = new URL(wc.getURL() || tab.state.url).hostname;
       } catch (err) {
         logger.warn("Failed to parse active tab URL for vault_totp:", err);
         return asErrorTextResponse("Could not parse active tab URL");
@@ -279,10 +283,7 @@ export function registerVaultTools(
         ? matches.find(
             (m) => m.label.toLowerCase() === credential_label.toLowerCase(),
           )
-        : matches.find((m) => {
-            const secret = vaultManager.getTotpSecret(m.id);
-            return secret != null;
-          });
+        : matches.find((m) => vaultManager.hasTotpSecret(m.id));
 
       if (!match) {
         return asTextResponse(
@@ -290,63 +291,69 @@ export function registerVaultTools(
         );
       }
 
-      const secret = vaultManager.getTotpSecret(match.id);
-      if (!secret) {
-        return asTextResponse(
-          `Credential "${match.label}" does not have a TOTP secret configured.`,
-        );
-      }
+      const fillTarget = createVaultFillTargetGuard(tabManager, tab);
+      const fill = await fillTarget.runAfterApproval(
+        async () => {
+          const consent = await requestConsent({
+            credentialLabel: match.label,
+            username: match.username,
+            domain: hostname,
+          });
+          appendAuditEntry({
+            timestamp: new Date().toISOString(),
+            credentialId: match.id,
+            credentialLabel: match.label,
+            domain: hostname,
+            action: "totp_generate",
+            approved: consent.approved,
+          });
+          return consent.approved;
+        },
+        async (target) => {
+          const secret = vaultManager.getTotpSecret(match.id);
+          if (!secret) {
+            return asTextResponse(
+              `Credential "${match.label}" does not have a TOTP secret configured.`,
+            );
+          }
 
-      // Request user consent
-      const consent = await requestConsent({
-        credentialLabel: match.label,
-        username: match.username,
-        domain: hostname,
-      });
+          const code = vaultManager.generateTotpCode(secret);
+          const fillResult = await target.executeJavaScript<string>(
+            `window.__vessel?.interactByIndex?.(${code_index}, "value", ${JSON.stringify(code)}) || "Error: interactByIndex not available"`,
+          );
+          vaultManager.recordUsage(match.id);
+          trackVaultAction("totp_fill");
 
-      appendAuditEntry({
-        timestamp: new Date().toISOString(),
-        credentialId: match.id,
-        credentialLabel: match.label,
-        domain: hostname,
-        action: "totp_generate",
-        approved: consent.approved,
-      });
+          const results = [`2FA code filled: ${fillResult.replace(/Typed into:.*/, "Typed into: [2FA field]")}`];
+          if (submit_after && submit_index != null) {
+            const submitResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${submit_index}, "click") || "Error: interactByIndex not available"`,
+            );
+            results.push(`Submit: ${submitResult}`);
+          }
 
-      if (!consent.approved) {
+          return asTextResponse(
+            [
+              `TOTP code filled for ${hostname} using credential "${match.label}".`,
+              ...results,
+              "",
+              "Note: The TOTP code was filled directly into the page. It is NOT included in this response.",
+            ].join("\n"),
+          );
+        },
+      );
+
+      if (fill.status === "denied") {
         return asTextResponse(
           `User denied TOTP access for ${hostname}.`,
         );
       }
-
-      // Generate TOTP code (NEVER sent to AI)
-      const code = vaultManager.generateTotpCode(secret);
-
-      // Fill the code field
-      const fillResult = await wc.executeJavaScript(
-        `window.__vessel?.interactByIndex?.(${code_index}, "value", ${JSON.stringify(code)}) || "Error: interactByIndex not available"`,
-      );
-
-      vaultManager.recordUsage(match.id);
-      trackVaultAction("totp_fill");
-
-      const results = [`2FA code filled: ${fillResult.replace(/Typed into:.*/, "Typed into: [2FA field]")}`];
-
-      if (submit_after && submit_index != null) {
-        const submitResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${submit_index}, "click") || "Error: interactByIndex not available"`,
+      if (fill.status === "changed") {
+        return asErrorTextResponse(
+          "The page changed while TOTP approval was pending. Refusing to fill the code.",
         );
-        results.push(`Submit: ${submitResult}`);
       }
-
-      return asTextResponse(
-        [
-          `TOTP code filled for ${hostname} using credential "${match.label}".`,
-          ...results,
-          "",
-          "Note: The TOTP code was filled directly into the page. It is NOT included in this response.",
-        ].join("\n"),
-      );
+      return fill.value;
     },
   );
 
@@ -457,7 +464,7 @@ export function registerVaultTools(
 
       let hostname: string;
       try {
-        hostname = new URL(tab.state.url).hostname;
+        hostname = new URL(tab.view.webContents.getURL() || tab.state.url).hostname;
       } catch {
         return asErrorTextResponse("Could not parse active tab URL.");
       }
@@ -494,61 +501,63 @@ export function registerVaultTools(
         }
       }
 
-      // Request consent
-      const consent = await requestHumanVaultConsent({
-        action: "fill",
-        entryId: entry.id,
-        title: entry.title,
-        username: entry.username,
-        domain: hostname,
-      });
-      if (!consent.approved) {
+      const fillTarget = createVaultFillTargetGuard(tabManager, tab);
+      const fill = await fillTarget.runAfterApproval(
+        async () => {
+          const consent = await requestHumanVaultConsent({
+            action: "fill",
+            entryId: entry.id,
+            title: entry.title,
+            username: entry.username,
+            domain: hostname,
+          });
+          return consent.approved;
+        },
+        async (target) => {
+          const decrypted = humanVault.getCredential(entry.id);
+          if (!decrypted) return asErrorTextResponse("Failed to decrypt password.");
+
+          const results: string[] = [];
+          if (username_index != null) {
+            const usernameResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${username_index}, "value", ${JSON.stringify(entry.username)}) || "Error: interactByIndex not available"`,
+            );
+            results.push(`Username filled: ${usernameResult.replace(/Typed into:.*/, "Typed into: [username field]")}`);
+          }
+          if (password_index != null) {
+            const passwordResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${password_index}, "value", ${JSON.stringify(decrypted.password)}) || "Error: interactByIndex not available"`,
+            );
+            results.push(`Password filled: ${passwordResult.replace(/Typed into:.*/, "Typed into: [password field]")}`);
+          }
+          if (submit_after && submit_index != null) {
+            const submitResult = await target.executeJavaScript<string>(
+              `window.__vessel?.interactByIndex?.(${submit_index}, "click") || "Error: interactByIndex not available"`,
+            );
+            results.push(`Submit: ${submitResult}`);
+          }
+
+          humanVault.recordUsage(entry.id, "mcp_tool");
+          return asTextResponse(
+            [
+              `Credentials filled for ${hostname} using "${entry.title}".`,
+              ...results,
+              "",
+              "Note: The password was filled directly into the page. It is NOT included in this response.",
+            ].join("\n"),
+          );
+        },
+      );
+
+      if (fill.status === "denied") {
         return asTextResponse("User denied filling credentials.");
       }
-
-      // Decrypt the password (never sent to AI)
-      const decrypted = humanVault.getCredential(entry.id);
-      if (!decrypted) {
-        return asErrorTextResponse("Failed to decrypt password.");
-      }
-
-      const wc = tab.view.webContents;
-      const results: string[] = [];
-
-      // Fill username
-      if (username_index != null) {
-        const usernameResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${username_index}, "value", ${JSON.stringify(entry.username)}) || "Error: interactByIndex not available"`,
+      if (fill.status === "changed") {
+        return asErrorTextResponse(
+          "The page changed while password approval was pending. Refusing to fill credentials.",
         );
-        results.push(`Username filled: ${usernameResult.replace(/Typed into:.*/, "Typed into: [username field]")}`);
       }
-
-      // Fill password (NEVER included in response text)
-      if (password_index != null) {
-        const passwordResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${password_index}, "value", ${JSON.stringify(decrypted.password)}) || "Error: interactByIndex not available"`,
-        );
-        results.push(`Password filled: ${passwordResult.replace(/Typed into:.*/, "Typed into: [password field]")}`);
-      }
-
-      // Submit if requested
-      if (submit_after && submit_index != null) {
-        const submitResult = await wc.executeJavaScript(
-          `window.__vessel?.interactByIndex?.(${submit_index}, "click") || "Error: interactByIndex not available"`,
-        );
-        results.push(`Submit: ${submitResult}`);
-      }
-
-      humanVault.recordUsage(entry.id, "mcp_tool");
-
-      return asTextResponse(
-        [
-          `Credentials filled for ${hostname} using "${entry.title}".`,
-          ...results,
-          "",
-          "Note: The password was filled directly into the page. It is NOT included in this response.",
-        ].join("\n"),
-      );
+      return fill.value;
     },
   );
 

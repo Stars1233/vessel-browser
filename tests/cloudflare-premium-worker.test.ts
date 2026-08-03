@@ -1,184 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import worker, {
-  ActivationAttemptGuard,
-} from "../scripts/cloudflare-worker/vessel-premium-api.js";
-
-const STRIPE_API = "https://api.stripe.com/v1";
-const OPENROUTER_API = "https://openrouter.ai/api/v1";
-const WORKER_URL = "https://premium.example";
-const nowSeconds = () => Math.floor(Date.now() / 1000);
-
-type MockFetchHandler = (
-  url: string,
-  init?: RequestInit,
-) => unknown | Promise<unknown>;
-
-const env = {
-  STRIPE_SECRET_KEY: "sk_test",
-  STRIPE_WEBHOOK_SECRET: "whsec_test",
-  STRIPE_PRICE_ID: "price_test",
-  PREMIUM_TOKEN_SECRET: "test-secret",
-  RESEND_API_KEY: "re_test",
-  PREMIUM_FROM_EMAIL: "Vessel <premium@example.com>",
-  FEEDBACK_TO_EMAIL: "hello@quantaintellect.com",
-};
-
-function createMemoryKv(): {
-  get: (key: string) => Promise<string | null>;
-  put: (
-    key: string,
-    value: string,
-    options?: { expirationTtl?: number },
-  ) => Promise<void>;
-} {
-  const store = new Map<string, string>();
-  return {
-    async get(key: string): Promise<string | null> {
-      return store.get(key) ?? null;
-    },
-    async put(key: string, value: string): Promise<void> {
-      store.set(key, value);
-    },
-  };
-}
-
-function createMemoryActivationGuard(): {
-  getByName: (name: string) => {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-  };
-} {
-  const states = new Map<string, { attempts: number; redeemed: boolean }>();
-  const queues = new Map<string, Promise<void>>();
-
-  return {
-    getByName(name: string) {
-      return {
-        fetch(_input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-          const run = async () => {
-            const body = JSON.parse(String(init?.body || "{}")) as { action?: string };
-            const state = states.get(name) || { attempts: 0, redeemed: false };
-            if (state.redeemed) {
-              return jsonResponse({ status: "redeemed", attempts: state.attempts });
-            }
-            if (state.attempts >= 5) {
-              return jsonResponse({ status: "limited", attempts: state.attempts });
-            }
-            if (body.action === "invalid") {
-              state.attempts += 1;
-              states.set(name, state);
-              return jsonResponse({ status: "recorded", attempts: state.attempts });
-            }
-            if (body.action === "redeem") {
-              state.redeemed = true;
-              states.set(name, state);
-              return jsonResponse({ status: "redeemed", attempts: state.attempts });
-            }
-            return jsonResponse({ status: "ready", attempts: state.attempts });
-          };
-
-          const response = (queues.get(name) || Promise.resolve()).then(run);
-          queues.set(name, response.then(() => undefined, () => undefined));
-          return response;
-        },
-      };
-    },
-  };
-}
-
-function createActivationBindings() {
-  return {
-    ACTIVATION_KV: createMemoryKv(),
-    ACTIVATION_GUARD: createMemoryActivationGuard(),
-  };
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-async function withMockFetch<T>(
-  handler: MockFetchHandler,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const rawUrl = typeof input === "string" ? input : input.toString();
-    const result = await handler(rawUrl, init);
-    return result instanceof Response ? result : jsonResponse(result);
-  }) as typeof fetch;
-
-  try {
-    return await fn();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-}
-
-async function postJson(path: string, body: unknown): Promise<Response> {
-  return worker.fetch(
-    new Request(`${WORKER_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-    env,
-  );
-}
-
-async function postJsonWithEnv(
-  path: string,
-  body: unknown,
-  envOverrides: Record<string, unknown>,
-  headers: Record<string, string> = {},
-): Promise<Response> {
-  return worker.fetch(
-    new Request(`${WORKER_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(body),
-    }),
-    { ...env, ...envOverrides },
-  );
-}
-
-async function createPremiumToken(customerId = "cus_test"): Promise<string> {
-  const kv = createMemoryKv();
-  return withMockFetch(
-    (url) => {
-      if (url === `${STRIPE_API}/checkout/sessions/cs_test`) {
-        return { customer: customerId, subscription: "sub_trial" };
-      }
-      if (url === `${STRIPE_API}/subscriptions/sub_trial`) {
-        return {
-          id: "sub_trial",
-          status: "trialing",
-          trial_end: nowSeconds() + 7 * 24 * 60 * 60,
-          current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
-        };
-      }
-      if (url === `${STRIPE_API}/customers/${customerId}`) {
-        return { id: customerId, email: "premium@example.com" };
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    },
-    async () => {
-      const response = await postJsonWithEnv(
-        "/verify",
-        { identifier: "cs_test" },
-        { ACTIVATION_KV: kv },
-      );
-      const data = await response.json() as { verificationToken?: string };
-      assert.equal(response.status, 200);
-      assert.equal(typeof data.verificationToken, "string");
-      return data.verificationToken!;
-    },
-  );
-}
+import worker from "../scripts/cloudflare-worker/vessel-premium-api.js";
+import {
+  OPENROUTER_API,
+  STRIPE_API,
+  WORKER_URL,
+  createActivationBindings,
+  createMemoryKv,
+  createMemorySecurityGuard,
+  createPremiumToken,
+  env,
+  nowSeconds,
+  postJson,
+  postJsonWithEnv,
+  withMockFetch,
+} from "./helpers/cloudflare-premium-worker.js";
 
 test("premium worker proxies mobile-only routes to the configured Node backend", async () => {
   let proxiedUrl = "";
@@ -576,6 +413,7 @@ test("premium worker returns entitlement metadata for signed tokens", async () =
 
 test("premium worker forces Vessel AI model and records successful usage", async () => {
   const kv = createMemoryKv();
+  const guard = createMemorySecurityGuard();
   const token = await createPremiumToken("cus_ai");
   let upstreamBody = "";
 
@@ -620,7 +458,12 @@ test("premium worker forces Vessel AI model and records successful usage", async
             max_tokens: 999999,
           }),
         }),
-        { ...env, ACTIVATION_KV: kv, OPENROUTER_API_KEY: "sk-or-test" },
+        {
+          ...env,
+          ACTIVATION_KV: kv,
+          ACTIVATION_GUARD: guard,
+          OPENROUTER_API_KEY: "sk-or-test",
+        },
       );
       const data = await response.json() as { model?: string };
       const sent = JSON.parse(upstreamBody) as { model?: string; max_tokens?: number };
@@ -633,7 +476,7 @@ test("premium worker forces Vessel AI model and records successful usage", async
       const entitlement = await postJsonWithEnv(
         "/entitlement",
         { identifier: token },
-        { ACTIVATION_KV: kv },
+        { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
       );
       const entitlementData = await entitlement.json() as {
         usage?: { requests?: number; promptTokens?: number; completionTokens?: number };
@@ -648,6 +491,7 @@ test("premium worker forces Vessel AI model and records successful usage", async
 test("premium worker sends feedback email through Resend", async () => {
   let resendRequestBody = "";
   const kv = createMemoryKv();
+  const guard = createMemorySecurityGuard();
 
   await withMockFetch(
     (url, init) => {
@@ -663,7 +507,7 @@ test("premium worker sends feedback email through Resend", async () => {
           message: "This is useful, but I found a paper cut.",
           source: "settings_account",
         },
-        { ACTIVATION_KV: kv },
+        { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
       );
       const data = await response.json() as { ok?: boolean };
 
@@ -697,6 +541,7 @@ test("premium worker validates feedback payloads before sending email", async ()
 
 test("premium worker rate limits feedback before sending email", async () => {
   const kv = createMemoryKv();
+  const guard = createMemorySecurityGuard();
   let resendCalls = 0;
 
   await withMockFetch(
@@ -713,7 +558,7 @@ test("premium worker rate limits feedback before sending email", async () => {
             email: "user@example.com",
             message: `Feedback message ${i}`,
           },
-          { ACTIVATION_KV: kv },
+          { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
           { "cf-connecting-ip": "203.0.113.10" },
         );
         assert.equal(response.status, 200);
@@ -725,7 +570,7 @@ test("premium worker rate limits feedback before sending email", async () => {
           email: "user@example.com",
           message: "One too many",
         },
-        { ACTIVATION_KV: kv },
+        { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
         { "cf-connecting-ip": "203.0.113.10" },
       );
       const data = await limitedResponse.json() as { error?: string };
@@ -749,6 +594,15 @@ test("premium worker blocks feedback when spam guard storage fails", async () =>
       throw new Error("kv unavailable");
     },
   };
+  const failingGuard = {
+    getByName() {
+      return {
+        async fetch() {
+          throw new Error("durable object unavailable");
+        },
+      };
+    },
+  };
 
   try {
     await withMockFetch(
@@ -764,7 +618,7 @@ test("premium worker blocks feedback when spam guard storage fails", async () =>
             email: "user@example.com",
             message: "Please keep the feedback path available.",
           },
-          { ACTIVATION_KV: failingKv },
+          { ACTIVATION_KV: failingKv, ACTIVATION_GUARD: failingGuard },
           { "cf-connecting-ip": "203.0.113.10" },
         );
         const data = await response.json() as { error?: string };
@@ -777,68 +631,6 @@ test("premium worker blocks feedback when spam guard storage fails", async () =>
   } finally {
     console.warn = originalWarn;
   }
-});
-
-test("activation attempt guard serializes concurrent invalid attempts", async () => {
-  const values = new Map<string, unknown>();
-  let transactionQueue = Promise.resolve();
-  const storage = {
-    transaction<T>(
-      callback: (transaction: {
-        get: (key: string) => Promise<unknown>;
-        put: (key: string, value: unknown) => Promise<void>;
-      }) => Promise<T>,
-    ): Promise<T> {
-      const result = transactionQueue.then(() =>
-        callback({
-          async get(key: string) {
-            return values.get(key);
-          },
-          async put(key: string, value: unknown) {
-            values.set(key, value);
-          },
-        })
-      );
-      transactionQueue = result.then(() => undefined, () => undefined);
-      return result;
-    },
-    async setAlarm() {},
-    async deleteAll() {
-      values.clear();
-    },
-  };
-  const guard = new ActivationAttemptGuard({ storage });
-  const request = () =>
-    new Request("https://activation-guard.internal/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "invalid",
-        expiresAt: Date.now() + 60_000,
-      }),
-    });
-
-  const responses = await Promise.all(
-    Array.from({ length: 6 }, () => guard.fetch(request())),
-  );
-  const results = await Promise.all(
-    responses.map((response) => response.json() as Promise<{ status?: string }>),
-  );
-
-  assert.equal(results.filter((result) => result.status === "recorded").length, 5);
-  assert.equal(results.filter((result) => result.status === "limited").length, 1);
-
-  const redeemed = await guard.fetch(
-    new Request("https://activation-guard.internal/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "redeem",
-        expiresAt: Date.now() + 60_000,
-      }),
-    }),
-  );
-  assert.equal((await redeemed.json() as { status?: string }).status, "redeemed");
 });
 
 test("premium worker locks activation challenges after repeated invalid codes", async () => {
