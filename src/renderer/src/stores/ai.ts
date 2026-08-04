@@ -34,18 +34,18 @@ const [pendingQueryActivities, setPendingQueryActivities] = createSignal<
   Array<PendingAutomationActivity | null>
 >([]);
 const [queueNotice, setQueueNotice] = createSignal<string | null>(null);
-const [automationActivities, setAutomationActivities] = createSignal<
-  AutomationActivityEntry[]
->([]);
-const [researchClarifications, setResearchClarifications] = createSignal<
-  ResearchClarification[]
->([]);
+const [automationActivities, setAutomationActivities] = createSignal<AutomationActivityEntry[]>([]);
+const [researchClarifications, setResearchClarifications] = createSignal<ResearchClarification[]>(
+  [],
+);
 
 let initialized = false;
 let pendingDrainScheduled = false;
 let listenerCleanups: Array<() => void> = [];
 let pendingAutomationActivity: PendingAutomationActivity | null = null;
 let activeAutomationActivityId: string | null = null;
+let activeConversationId: string | null = null;
+let activeChatId: string | null = null;
 
 function trimMessages(next: AIMessage[]): AIMessage[] {
   return next.length > MAX_MESSAGE_HISTORY ? next.slice(-MAX_MESSAGE_HISTORY) : next;
@@ -63,7 +63,16 @@ function buildHistory(): AIMessage[] {
 }
 
 async function dispatchQuery(prompt: string): Promise<boolean> {
-  const result = await window.vessel.ai.query(prompt, buildHistory());
+  const result = await window.vessel.ai.query(
+    prompt,
+    buildHistory(),
+    activeConversationId ?? undefined,
+    activeChatId ?? undefined,
+  );
+  if (result.accepted) {
+    activeConversationId = result.conversationId;
+    activeChatId = result.chatId;
+  }
   return result.accepted;
 }
 
@@ -111,106 +120,112 @@ function schedulePendingDrain(): void {
 function init() {
   if (initialized) return;
   initialized = true;
-  listenerCleanups.push(window.vessel.ai.onStreamStart((prompt: string) => {
-    setMessages((prev) => {
-      const next = [...prev, { role: "user" as const, content: prompt }];
-      return trimMessages(next);
-    });
-    setStreamingText("");
-    setIsStreaming(true);
-    setHasFirstChunk(false);
-    setStreamStartedAt(Date.now());
-
-    if (pendingAutomationActivity) {
-      const activity = pendingAutomationActivity;
-      activeAutomationActivityId = activity.id;
-      setAutomationActivities((prev) =>
-        startAutomationActivity(prev, {
-          id: activity.id,
-          source: "scheduled",
-          title: activity.title,
-          icon: activity.icon,
-          status: "running",
-          startedAt: new Date().toISOString(),
-        }),
-      );
-      pendingAutomationActivity = null;
-    }
-  }));
-  listenerCleanups.push(window.vessel.ai.onStreamChunk((chunk: string) => {
-    if (!hasFirstChunk()) {
-      setHasFirstChunk(true);
-    }
-    setStreamingText((prev) => prev + chunk);
-    if (activeAutomationActivityId) {
-      const activityId = activeAutomationActivityId;
-      setAutomationActivities((prev) =>
-        appendAutomationActivityChunk(prev, activityId, chunk),
-      );
-    }
-  }));
-  listenerCleanups.push(window.vessel.ai.onStreamEnd((status) => {
-    const finalText = streamingText();
-    if (finalText) {
+  listenerCleanups.push(
+    window.vessel.ai.onStreamStart((prompt: string) => {
       setMessages((prev) => {
-        const next = [...prev, { role: "assistant" as const, content: finalText }];
+        const next = [...prev, { role: "user" as const, content: prompt }];
         return trimMessages(next);
       });
-    }
-    if (activeAutomationActivityId) {
-      const activityId = activeAutomationActivityId;
-      setAutomationActivities((prev) =>
-        finishAutomationActivity(
-          prev,
-          activityId,
-          status,
-          new Date().toISOString(),
-        ),
-      );
-      activeAutomationActivityId = null;
-    }
-    pendingAutomationActivity = null;
-    setStreamingText("");
-    setIsStreaming(false);
-    setHasFirstChunk(false);
-    setStreamStartedAt(null);
-    schedulePendingDrain();
-  }));
-  listenerCleanups.push(window.vessel.ai.onStreamIdle(() => {
-    schedulePendingDrain();
-  }));
-  listenerCleanups.push(window.vessel.ai.onResearchClarification((payload) => {
-    setResearchClarifications((prev) => [...prev, payload].slice(-20));
-    setMessages((prev) => {
-      if (prev.some((message) => message.role === "assistant" && message.content === payload.question)) {
-        return prev;
+      setStreamingText("");
+      setIsStreaming(true);
+      setHasFirstChunk(false);
+      setStreamStartedAt(Date.now());
+
+      if (pendingAutomationActivity) {
+        const activity = pendingAutomationActivity;
+        activeAutomationActivityId = activity.id;
+        setAutomationActivities((prev) =>
+          startAutomationActivity(prev, {
+            id: activity.id,
+            source: "scheduled",
+            title: activity.title,
+            icon: activity.icon,
+            status: "running",
+            startedAt: new Date().toISOString(),
+          }),
+        );
+        pendingAutomationActivity = null;
       }
-      const next = [
-        ...prev,
-        { role: "assistant" as const, content: payload.question },
-      ];
-      return trimMessages(next);
-    });
-    if (activeAutomationActivityId) {
-      const activityId = activeAutomationActivityId;
-      setAutomationActivities((prev) =>
-        appendAutomationActivityChunk(prev, activityId, payload.question),
-      );
-    }
-  }));
-  listenerCleanups.push(window.vessel.ai.onAutomationActivityStart((entry) => {
-    setAutomationActivities((prev) => startAutomationActivity(prev, entry));
-  }));
-  listenerCleanups.push(window.vessel.ai.onAutomationActivityChunk(({ id, chunk }) => {
-    setAutomationActivities((prev) =>
-      appendAutomationActivityChunk(prev, id, chunk),
-    );
-  }));
-  listenerCleanups.push(window.vessel.ai.onAutomationActivityEnd(({ id, status, finishedAt }) => {
-    setAutomationActivities((prev) =>
-      finishAutomationActivity(prev, id, status, finishedAt),
-    );
-  }));
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onStreamChunk((chunk: string) => {
+      if (!hasFirstChunk()) {
+        setHasFirstChunk(true);
+      }
+      setStreamingText((prev) => prev + chunk);
+      if (activeAutomationActivityId) {
+        const activityId = activeAutomationActivityId;
+        setAutomationActivities((prev) => appendAutomationActivityChunk(prev, activityId, chunk));
+      }
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onStreamEnd((status) => {
+      const finalText = streamingText();
+      if (finalText) {
+        setMessages((prev) => {
+          const next = [...prev, { role: "assistant" as const, content: finalText }];
+          return trimMessages(next);
+        });
+      }
+      if (activeAutomationActivityId) {
+        const activityId = activeAutomationActivityId;
+        setAutomationActivities((prev) =>
+          finishAutomationActivity(prev, activityId, status, new Date().toISOString()),
+        );
+        activeAutomationActivityId = null;
+      }
+      pendingAutomationActivity = null;
+      setStreamingText("");
+      setIsStreaming(false);
+      setHasFirstChunk(false);
+      setStreamStartedAt(null);
+      schedulePendingDrain();
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onStreamIdle(() => {
+      schedulePendingDrain();
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onResearchClarification((payload) => {
+      setResearchClarifications((prev) => [...prev, payload].slice(-20));
+      setMessages((prev) => {
+        if (
+          prev.some(
+            (message) => message.role === "assistant" && message.content === payload.question,
+          )
+        ) {
+          return prev;
+        }
+        const next = [...prev, { role: "assistant" as const, content: payload.question }];
+        return trimMessages(next);
+      });
+      if (activeAutomationActivityId) {
+        const activityId = activeAutomationActivityId;
+        setAutomationActivities((prev) =>
+          appendAutomationActivityChunk(prev, activityId, payload.question),
+        );
+      }
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onAutomationActivityStart((entry) => {
+      setAutomationActivities((prev) => startAutomationActivity(prev, entry));
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onAutomationActivityChunk(({ id, chunk }) => {
+      setAutomationActivities((prev) => appendAutomationActivityChunk(prev, id, chunk));
+    }),
+  );
+  listenerCleanups.push(
+    window.vessel.ai.onAutomationActivityEnd(({ id, status, finishedAt }) => {
+      setAutomationActivities((prev) => finishAutomationActivity(prev, id, status, finishedAt));
+    }),
+  );
 }
 
 export function resetAIStoreForTests(): void {
@@ -237,10 +252,7 @@ export function resetAIStoreForTests(): void {
 
 export function useAI() {
   init();
-  const query = async (
-    prompt: string,
-    activity: PendingAutomationActivity | null = null,
-  ) => {
+  const query = async (prompt: string, activity: PendingAutomationActivity | null = null) => {
     recordRecentQuery(prompt);
 
     if (isStreaming()) {
@@ -282,18 +294,21 @@ export function useAI() {
     pendingQueryCount: () => pendingQueries().length,
     pendingQueryLimit: MAX_PENDING_QUERIES,
     queueNotice,
+    loadConversation: (threadId: string, chatId: string | null, history: AIMessage[]) => {
+      activeConversationId = threadId;
+      activeChatId = chatId;
+      setMessages(trimMessages(history));
+      setStreamingText("");
+      setResearchClarifications([]);
+    },
     query,
-    runAutomationPrompt: async (
-      prompt: string,
-      activity: PendingAutomationActivity,
-    ) => query(prompt, activity),
+    runAutomationPrompt: async (prompt: string, activity: PendingAutomationActivity) =>
+      query(prompt, activity),
     cancel: () => window.vessel.ai.cancel(),
     removePendingQuery: (index: number) => {
       const next = removePendingPrompt(pendingQueries(), index);
       setPendingQueries(next.queue);
-      setPendingQueryActivities((prev) =>
-        prev.filter((_, itemIndex) => itemIndex !== index),
-      );
+      setPendingQueryActivities((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
       setQueueNotice(next.notice);
     },
     clearPendingQueries: () => {
@@ -303,6 +318,8 @@ export function useAI() {
       setQueueNotice(next.notice);
     },
     clearHistory: () => {
+      activeConversationId = null;
+      activeChatId = null;
       setMessages([]);
       setResearchClarifications([]);
       const next = clearPendingPromptQueue();

@@ -12,6 +12,7 @@ import {
   loadSettings,
 } from "./config/settings";
 import { startMcpServer, stopMcpServer } from "./mcp/server";
+import { configureMcpRunManager } from "./mcp/mcp-helpers";
 import { AgentRuntime } from "./agent/runtime";
 import {
   recordDevToolsAgentAction,
@@ -31,17 +32,16 @@ import {
   initializeRuntimeHealth,
   setStartupIssues,
 } from "./health/runtime-health";
-import {
-  registerHighlightShortcut,
-  setupAppMenu,
-  loadRenderers,
-} from "./startup";
+import { registerHighlightShortcut, setupAppMenu, loadRenderers } from "./startup";
 import { createSplashWindow, closeSplash } from "./splash";
 import { getHighlightCount } from "./highlights/inject";
 import type { RuntimeHealthIssue, VesselSettings } from "../shared/types";
 import * as highlightsManager from "./highlights/manager";
 import { createLogger } from "../shared/logger";
 import { sendSafe } from "./ipc/common";
+import { ConversationManager } from "./conversations/manager";
+import { PolicyManager } from "./policy/manager";
+import { RunManager } from "./runs/manager";
 
 const logger = createLogger("Bootstrap");
 import * as autofillManager from "./autofill/manager";
@@ -49,11 +49,13 @@ import * as pageSnapshots from "./content/page-snapshots";
 
 let runtime: AgentRuntime | null = null;
 let windowStateForShutdown: WindowState | null = null;
+let conversationManager: ConversationManager | null = null;
+let policyManager: PolicyManager | null = null;
+let runManager: RunManager | null = null;
 
 function configureUserAgent(): void {
   const originalUA = session.defaultSession.getUserAgent();
-  const maskedUA =
-    originalUA.replace(/ Electron\/[^\s]+/, "") + " Vessel/" + app.getVersion();
+  const maskedUA = originalUA.replace(/ Electron\/[^\s]+/, "") + " Vessel/" + app.getVersion();
   session.defaultSession.setUserAgent(maskedUA);
 }
 
@@ -72,8 +74,7 @@ function checkWritableUserData(userDataPath: string): RuntimeHealthIssue[] {
       code: "user-data-not-writable",
       severity: "error",
       title: "Vessel cannot write to its data directory",
-      detail:
-        error instanceof Error ? error.message : "Unknown filesystem error.",
+      detail: error instanceof Error ? error.message : "Unknown filesystem error.",
       action: `Check permissions for ${userDataPath}.`,
     });
   }
@@ -84,15 +85,9 @@ function collectStartupIssues(
   settings: VesselSettings,
   userDataPath: string,
 ): RuntimeHealthIssue[] {
-  const issues = [
-    ...getSettingsLoadIssues(),
-    ...checkWritableUserData(userDataPath),
-  ];
+  const issues = [...getSettingsLoadIssues(), ...checkWritableUserData(userDataPath)];
 
-  if (
-    settings.obsidianVaultPath.trim() &&
-    !fs.existsSync(settings.obsidianVaultPath)
-  ) {
+  if (settings.obsidianVaultPath.trim() && !fs.existsSync(settings.obsidianVaultPath)) {
     issues.push({
       code: "obsidian-vault-missing",
       severity: "warning",
@@ -114,8 +109,7 @@ async function maybeShowStartupHealthDialog(
   windowState: ReturnType<typeof createMainWindow>,
 ): Promise<void> {
   const health = getRuntimeHealth();
-  const hasIssues =
-    health.startupIssues.length > 0 || health.mcp.status === "error";
+  const hasIssues = health.startupIssues.length > 0 || health.mcp.status === "error";
   if (!hasIssues) return;
 
   const lines = health.startupIssues.map(formatIssue);
@@ -142,12 +136,29 @@ async function bootstrap(): Promise<void> {
   const splash = await createSplashWindow();
   const settings = loadSettings();
   const userDataPath = app.getPath("userData");
+  runManager = new RunManager();
+  conversationManager = new ConversationManager();
+  policyManager = new PolicyManager();
+  configureMcpRunManager(runManager);
+  runManager.pruneExpired(settings.historyRetentionDays);
+  conversationManager.pruneExpired(settings.historyRetentionDays);
+  policyManager.pruneExpired();
   initializeRuntimeHealth({
     userDataPath,
     settingsPath: getSettingsPath(),
     configuredPort: settings.mcpPort,
   });
-  setStartupIssues(collectStartupIssues(settings, userDataPath));
+  const startupIssues = collectStartupIssues(settings, userDataPath);
+  if (!conversationManager.isPersistenceAvailable()) {
+    startupIssues.push({
+      code: "conversation-secure-storage-unavailable",
+      severity: "warning",
+      title: "Conversation history will not persist",
+      detail: "OS-backed secure storage is unavailable, so conversation bodies remain in memory.",
+      action: "Enable the operating system keychain to persist conversation history securely.",
+    });
+  }
+  setStartupIssues(startupIssues);
   if (settings.clearBookmarksOnLaunch) {
     bookmarkManager.clearAll();
   }
@@ -198,9 +209,37 @@ async function bootstrap(): Promise<void> {
   }, 8000);
 
   const { chromeView, sidebarView, devtoolsPanelView, tabManager } = windowState;
-  runtime = new AgentRuntime(tabManager);
+  runtime = new AgentRuntime(tabManager, { policyManager });
   runtime.setActionLifecycleListener((event) => {
     recordDevToolsAgentAction(event, tabManager);
+    if (!event.runId) return;
+    if (event.phase === "waiting-approval") {
+      runManager?.setWaitingApproval(event.runId, event.detail ?? event.name);
+    } else if (event.phase === "approval-resolved") {
+      runManager?.setRunning(event.runId, event.detail ?? "Approval resolved");
+      return;
+    }
+    const tabState = event.tabId
+      ? tabManager.getAllStates().find((tab) => tab.id === event.tabId)
+      : undefined;
+    runManager?.appendEvent(event.runId, {
+      kind:
+        event.phase === "started"
+          ? "action-started"
+          : event.phase === "waiting-approval"
+            ? "action-waiting-approval"
+            : event.phase === "completed"
+              ? "action-completed"
+              : event.phase === "failed"
+                ? "action-failed"
+                : "action-rejected",
+      summary: event.detail ?? event.name,
+      actionId: event.actionId,
+      actionName: event.name,
+      durationMs: event.durationMs,
+      metadata: event.args,
+      tab: tabState ? { tabId: tabState.id, title: tabState.title, url: tabState.url } : undefined,
+    });
   });
   installAdBlocking(tabManager);
 
@@ -209,7 +248,11 @@ async function bootstrap(): Promise<void> {
     sendSafe(devtoolsPanelView.webContents, Channels.DEVTOOLS_PANEL_STATE, state);
   });
 
-  registerIpcHandlers(windowState, runtime);
+  registerIpcHandlers(windowState, runtime, {
+    conversations: conversationManager,
+    policies: policyManager,
+    runs: runManager,
+  });
 
   // Wire security state updates to renderer views
   tabManager.onSecurityStateChange((tabId, state) => {
@@ -307,12 +350,7 @@ async function bootstrap(): Promise<void> {
     "did-fail-load",
     (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame) return;
-      logger.error(
-        "Chrome renderer failed to load:",
-        errorCode,
-        errorDescription,
-        validatedURL,
-      );
+      logger.error("Chrome renderer failed to load:", errorCode, errorDescription, validatedURL);
       clearTimeout(splashTimeout);
       revealMainWindow();
     },
@@ -338,35 +376,38 @@ process.on("uncaughtException", (error: Error) => {
 
 /** Handle rejected Promises that bubble up without a .catch() */
 process.on("unhandledRejection", (reason: unknown) => {
-  logger.error(
-    "Unhandled rejection:",
-    reason instanceof Error ? reason.message : reason,
-  );
+  logger.error("Unhandled rejection:", reason instanceof Error ? reason.message : reason);
 });
 
-app.whenReady().then(bootstrap).catch((error) => {
-  logger.error("Failed to bootstrap application:", error);
-  app.quit();
-});
+app
+  .whenReady()
+  .then(bootstrap)
+  .catch((error) => {
+    logger.error("Failed to bootstrap application:", error);
+    app.quit();
+  });
 
-  app.on("window-all-closed", () => {
-    globalShortcut.unregisterAll();
-    stopTelemetry();
-    stopBackgroundRevalidation();
-    // Dispose runtime and tab manager before persisting to free listeners and memory
-    runtime?.dispose();
-    windowStateForShutdown?.tabManager.dispose();
-    void Promise.all([
-      runtime?.flushPersist() ?? Promise.resolve(),
-      bookmarkManager.flushPersist(),
-      historyManager.flushPersist(),
-      highlightsManager.flushPersist(),
-      autofillManager.flushPersist(),
-      pageSnapshots.flushPersist(),
-      flushSettingsPersist(),
-    ]).finally(() => {
-      void stopMcpServer().finally(() => {
-        app.quit();
-      });
+app.on("window-all-closed", () => {
+  globalShortcut.unregisterAll();
+  stopTelemetry();
+  stopBackgroundRevalidation();
+  // Dispose runtime and tab manager before persisting to free listeners and memory
+  runtime?.dispose();
+  windowStateForShutdown?.tabManager.dispose();
+  void Promise.all([
+    runtime?.flushPersist() ?? Promise.resolve(),
+    runManager?.flushPersist() ?? Promise.resolve(),
+    conversationManager?.flushPersist() ?? Promise.resolve(),
+    policyManager?.flushPersist() ?? Promise.resolve(),
+    bookmarkManager.flushPersist(),
+    historyManager.flushPersist(),
+    highlightsManager.flushPersist(),
+    autofillManager.flushPersist(),
+    pageSnapshots.flushPersist(),
+    flushSettingsPersist(),
+  ]).finally(() => {
+    void stopMcpServer().finally(() => {
+      app.quit();
     });
   });
+});

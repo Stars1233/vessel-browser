@@ -356,6 +356,8 @@ export async function executeAction(
     name,
     args,
     tabId,
+    runId: ctx.runId,
+    url: wc?.getURL() ?? null,
     dangerous: isDangerousAction(name),
     executor: () => dispatch(name, args, ctx, wc, tabId),
   });

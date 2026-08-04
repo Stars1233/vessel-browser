@@ -10,6 +10,9 @@ import {
 } from "./common";
 import type { AgentRuntime } from "../agent/runtime";
 import { ResearchOrchestrator } from "../agent/research/orchestrator";
+import type { ConversationManager } from "../conversations/manager";
+import type { PolicyManager } from "../policy/manager";
+import type { RunManager } from "../runs/manager";
 
 import { registerTabHandlers } from "./tabs";
 import { registerAIHandlers } from "./ai";
@@ -33,12 +36,22 @@ import { registerAutofillHandlers } from "./autofill";
 import { registerPageDiffHandlers } from "./page-diff";
 import { registerResearchHandlers } from "./research";
 import { registerScheduleHandlers } from "../automation/scheduler";
+import { registerConversationHandlers } from "./conversations";
+import { registerPolicyHandlers } from "./policies";
+import { registerRunHandlers } from "./runs";
 
 export { togglePictureInPicture } from "./picture-in-picture";
+
+export interface ReliabilityServices {
+  conversations: ConversationManager;
+  policies: PolicyManager;
+  runs: RunManager;
+}
 
 export function registerIpcHandlers(
   windowState: WindowState,
   runtime: AgentRuntime,
+  reliability: ReliabilityServices,
 ): void {
   const { tabManager, chromeView, sidebarView, devtoolsPanelView, mainWindow } = windowState;
   registerTrustedIpcSender(chromeView.webContents);
@@ -57,22 +70,31 @@ export function registerIpcHandlers(
   const getResearchOrchestrator = (): ResearchOrchestrator => {
     if (!researchOrchestrator) {
       const settings = loadSettings();
-      const provider = settings.chatProvider
-        ? createProvider(settings.chatProvider)
-        : null;
-      researchOrchestrator = new ResearchOrchestrator(provider, tabManager, runtime);
+      const provider = settings.chatProvider ? createProvider(settings.chatProvider) : null;
+      researchOrchestrator = new ResearchOrchestrator(
+        provider,
+        tabManager,
+        runtime,
+        reliability.runs,
+      );
       researchOrchestrator.setUpdateListener((state) => {
         sendToRendererViews(Channels.RESEARCH_STATE_UPDATE, state);
       });
     }
     return researchOrchestrator;
   };
-  const getExistingResearchOrchestrator = (): ResearchOrchestrator | null =>
-    researchOrchestrator;
+  const getExistingResearchOrchestrator = (): ResearchOrchestrator | null => researchOrchestrator;
 
   // --- Domain-specific IPC handlers ---
   registerTabHandlers(windowState, sendToRendererViews);
-  registerAIHandlers(tabManager, runtime, sendToRendererViews, getResearchOrchestrator);
+  registerAIHandlers(
+    tabManager,
+    runtime,
+    sendToRendererViews,
+    getResearchOrchestrator,
+    reliability.runs,
+    reliability.conversations,
+  );
   registerContentHandlers(windowState);
   registerHighlightHandlers(windowState, sendToRendererViews);
   registerAgentRuntimeHandlers(
@@ -89,6 +111,9 @@ export function registerIpcHandlers(
     getExistingResearchOrchestrator,
   );
 
+  registerRunHandlers(reliability.runs, sendToRendererViews);
+  registerConversationHandlers(reliability.conversations, sendToRendererViews);
+  registerPolicyHandlers(reliability.policies, sendToRendererViews);
   registerBookmarkHandlers();
   registerHistoryHandlers();
   registerPremiumHandlers(tabManager, sendToRendererViews);
@@ -103,6 +128,6 @@ export function registerIpcHandlers(
   registerAutofillHandlers(windowState);
   registerPageDiffHandlers(windowState, sendToRendererViews);
   registerResearchHandlers(() => getResearchOrchestrator());
-  registerScheduleHandlers(windowState, runtime, sendToRendererViews);
+  registerScheduleHandlers(windowState, runtime, reliability.runs, sendToRendererViews);
   registerSystemHandlers(windowState, sendToRendererViews);
 }

@@ -20,6 +20,7 @@ import { type ActionContext, TabMutex } from "../../ai/page-actions/core";
 import type { TabManager } from "../../tabs/tab-manager";
 import type { AgentRuntime } from "../runtime";
 import { loadSettings } from "../../config/settings";
+import type { RunManager } from "../../runs/manager";
 
 const logger = createLogger("ResearchOrchestrator");
 const MAX_THREADS = 5;
@@ -72,17 +73,18 @@ function normalizeSourceDomain(value: string): string {
   const trimmed = value.trim().toLowerCase();
   if (!trimmed) return "";
   try {
-    return new URL(
-      trimmed.includes("://") ? trimmed : `https://${trimmed}`,
-    ).hostname.replace(/^www\./, "");
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname.replace(
+      /^www\./,
+      "",
+    );
   } catch {
     return trimmed.replace(/^www\./, "");
   }
 }
 
 function mergeBlockedSourceDomains(thread: ResearchThread): ResearchThread {
-  const globalBlocked = loadSettings().sourceDoNotAllowList
-    .map(normalizeSourceDomain)
+  const globalBlocked = loadSettings()
+    .sourceDoNotAllowList.map(normalizeSourceDomain)
     .filter(Boolean);
   if (globalBlocked.length === 0) return thread;
 
@@ -103,10 +105,7 @@ function matchesSourceDomain(hostname: string, domain: string): boolean {
   return hostname === domain || hostname.endsWith(`.${domain}`);
 }
 
-function getBlockedSourceNavigation(
-  url: unknown,
-  blockedDomains: string[],
-): string | null {
+function getBlockedSourceNavigation(url: unknown, blockedDomains: string[]): string | null {
   if (typeof url !== "string" || blockedDomains.length === 0) return null;
   try {
     const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
@@ -120,9 +119,7 @@ function getBlockedSourceNavigation(
   }
 }
 
-function buildFallbackSourceIndex(
-  findings: ThreadFindings[],
-): ResearchReport["sourceIndex"] {
+function buildFallbackSourceIndex(findings: ThreadFindings[]): ResearchReport["sourceIndex"] {
   const seen = new Set<string>();
   const sources: ResearchReport["sourceIndex"] = [];
 
@@ -141,12 +138,8 @@ function buildFallbackSourceIndex(
   return sources;
 }
 
-function citationForClaim(
-  claim: SourcedClaim,
-  sourceIndex: ResearchReport["sourceIndex"],
-): string {
-  const index =
-    sourceIndex.find((source) => source.url === claim.sourceUrl)?.index ?? 0;
+function citationForClaim(claim: SourcedClaim, sourceIndex: ResearchReport["sourceIndex"]): string {
+  const index = sourceIndex.find((source) => source.url === claim.sourceUrl)?.index ?? 0;
   return index > 0 ? `[${index}]` : "";
 }
 
@@ -157,9 +150,7 @@ function buildFallbackFindingsByThread(
   return findings.map((finding) => {
     const claimLines = finding.claims.map((claim) => {
       const citation = citationForClaim(claim, sourceIndex);
-      return citation
-        ? `${claim.claim} ${citation}`
-        : claim.claim;
+      return citation ? `${claim.claim} ${citation}` : claim.claim;
     });
 
     return {
@@ -179,10 +170,7 @@ function buildFallbackReport(
 ): ResearchReport {
   const sourceIndex = buildFallbackSourceIndex(findings);
   const findingsByThread = buildFallbackFindingsByThread(findings, sourceIndex);
-  const claimCount = findings.reduce(
-    (sum, finding) => sum + finding.claims.length,
-    0,
-  );
+  const claimCount = findings.reduce((sum, finding) => sum + finding.claims.length, 0);
   const executiveSummary =
     claimCount > 0
       ? `The model's final synthesis response could not be parsed, so Vessel generated this sourced fallback from ${claimCount} extracted claim${claimCount === 1 ? "" : "s"} across ${sourceIndex.length} source${sourceIndex.length === 1 ? "" : "s"}.`
@@ -205,11 +193,13 @@ export class ResearchOrchestrator {
   private updateListener: ((state: ResearchState) => void) | null = null;
   private stopRequested = false;
   private synthesizeAfterStop = false;
+  private activeResearchRunId: string | null = null;
 
   constructor(
     private provider: AIProvider | null,
     private readonly tabManager: TabManager,
     private readonly runtime: AgentRuntime,
+    private readonly runManager?: RunManager,
   ) {
     this.state = this.initialState();
   }
@@ -269,6 +259,10 @@ export class ResearchOrchestrator {
     this.stopRequested = true;
     this.synthesizeAfterStop = false;
     this.provider?.cancel();
+    if (this.activeResearchRunId) {
+      this.runManager?.finishRun(this.activeResearchRunId, { status: "cancelled" });
+      this.activeResearchRunId = null;
+    }
     this.state = this.initialState();
     this.emit();
   }
@@ -348,9 +342,7 @@ export class ResearchOrchestrator {
       logger.warn("Not in planning phase, ignoring setObjectives");
       return;
     }
-    const threads = objectives.threads
-      .slice(0, MAX_THREADS)
-      .map(mergeBlockedSourceDomains);
+    const threads = objectives.threads.slice(0, MAX_THREADS).map(mergeBlockedSourceDomains);
     this.state.objectives = {
       ...objectives,
       threads,
@@ -396,13 +388,10 @@ export class ResearchOrchestrator {
           const obj = t as Record<string, unknown>;
           const question = String(obj.question || "").trim();
           const searchQueries = Array.isArray(obj.searchQueries)
-            ? obj.searchQueries
-                .map((q) => String(q).trim())
-                .filter(Boolean)
+            ? obj.searchQueries.map((q) => String(q).trim()).filter(Boolean)
             : [];
           const sourceBudget =
-            typeof obj.sourceBudget === "number" &&
-            Number.isFinite(obj.sourceBudget)
+            typeof obj.sourceBudget === "number" && Number.isFinite(obj.sourceBudget)
               ? Math.max(1, Math.floor(obj.sourceBudget))
               : 5;
           return {
@@ -493,6 +482,19 @@ export class ResearchOrchestrator {
     // Shared mutex so parallel sub-agents serialize browser access
     const tabMutex = new TabMutex();
 
+    const initialState = this.tabManager
+      .getAllStates()
+      .find((tab) => tab.id === this.tabManager.getActiveTabId());
+    const parentRun = this.runManager?.startRun({
+      source: "research",
+      title: this.state.objectives.researchQuestion,
+      goal: this.state.objectives.researchQuestion,
+      researchId: this.state.objectives.researchQuestion,
+      initialTab: initialState
+        ? { tabId: initialState.id, title: initialState.title, url: initialState.url }
+        : null,
+    });
+    this.activeResearchRunId = parentRun?.id ?? null;
     const results = await Promise.all(
       this.state.threads.map((thread) => {
         if (this.state.phase !== "executing") return null;
@@ -529,19 +531,28 @@ export class ResearchOrchestrator {
 
     try {
       await this.synthesizeReport();
+      if (this.activeResearchRunId) {
+        this.runManager?.finishRun(this.activeResearchRunId, {
+          status: "completed",
+          outputSummary: this.state.report?.executiveSummary ?? "Research delivered",
+        });
+      }
     } catch (err) {
       logger.error("Auto-synthesis failed", err);
       this.state.error = `Synthesis failed: ${String(err)}`;
+      if (this.activeResearchRunId) {
+        this.runManager?.finishRun(this.activeResearchRunId, {
+          status: "failed",
+          error: String(err),
+        });
+      }
       this.setPhase("delivered");
     }
   }
 
   // ── sub-agent loop ─────────────────────────────────────────────
 
-  private async runSubAgent(
-    thread: ResearchThread,
-    tabMutex: TabMutex,
-  ): Promise<ThreadFindings> {
+  private async runSubAgent(thread: ResearchThread, tabMutex: TabMutex): Promise<ThreadFindings> {
     const trace: SubAgentTrace = {
       threadLabel: thread.label,
       toolCalls: [],
@@ -549,6 +560,13 @@ export class ResearchOrchestrator {
       startedAt: new Date().toISOString(),
       finishedAt: "",
     };
+    const childRun = this.runManager?.startRun({
+      source: "research",
+      title: thread.label,
+      goal: thread.question,
+      researchId: this.state.objectives?.researchQuestion,
+      parentRunId: this.activeResearchRunId ?? undefined,
+    });
 
     const tabId = this.tabManager.createTab();
     let sourcesConsumed = 0;
@@ -574,6 +592,7 @@ export class ResearchOrchestrator {
         runtime: this.runtime,
         toolProfile: provider.agentToolProfile,
         tabId: tabId ?? undefined,
+        runId: childRun?.id,
         _tabMutex: tabMutex,
       };
 
@@ -595,10 +614,7 @@ export class ResearchOrchestrator {
 
           // Enforce source budget
           if (name === "navigate") {
-            const blockedDomain = getBlockedSourceNavigation(
-              args.url,
-              thread.blockedDomains,
-            );
+            const blockedDomain = getBlockedSourceNavigation(args.url, thread.blockedDomains);
             if (blockedDomain) {
               const msg = `Source skipped: ${String(args.url)} matches the Research Desk source do-not-allow list (${blockedDomain}). Choose a different source.`;
               discardedSources.push({
@@ -692,6 +708,16 @@ export class ResearchOrchestrator {
       );
     }
 
+    if (childRun) {
+      this.runManager?.finishRun(childRun.id, {
+        status: claims.length > 0 ? "completed" : "failed",
+        outputSummary: transcript,
+        error:
+          claims.length > 0
+            ? null
+            : (trace.errors.at(-1)?.message ?? "No citeable claims extracted"),
+      });
+    }
     return {
       threadLabel: thread.label,
       threadQuestion: thread.question,
@@ -772,9 +798,7 @@ ${transcript.slice(0, 32000)}`;
             relevanceNote: String(c.relevanceNote || "").trim(),
           };
         })
-        .filter(
-          (claim) => claim.claim && claim.sourceUrl && claim.extractedQuote,
-        );
+        .filter((claim) => claim.claim && claim.sourceUrl && claim.extractedQuote);
     } catch {
       logger.warn(`Failed to parse claims JSON for "${thread.label}"`);
       return [];
@@ -837,9 +861,7 @@ ${transcript.slice(0, 32000)}`;
               const obj = s as Record<string, unknown>;
               return {
                 index:
-                  typeof obj.index === "number"
-                    ? obj.index
-                    : parseInt(String(obj.index), 10) || 0,
+                  typeof obj.index === "number" ? obj.index : parseInt(String(obj.index), 10) || 0,
                 url: String(obj.url || "").trim(),
                 title: String(obj.title || "").trim(),
                 accessedAt: String(obj.accessedAt || "").trim(),
@@ -863,9 +885,7 @@ ${transcript.slice(0, 32000)}`;
         title: String(parsed.title || objectives.researchQuestion).trim(),
         executiveSummary: String(parsed.executiveSummary || "").trim(),
         findingsByThread:
-          findingsByThread.length > 0
-            ? findingsByThread
-            : buildFallbackFindingsByThread(findings),
+          findingsByThread.length > 0 ? findingsByThread : buildFallbackFindingsByThread(findings),
         contradictions: Array.isArray(parsed.contradictions)
           ? parsed.contradictions
               .map((c: unknown) => {
@@ -885,15 +905,12 @@ ${transcript.slice(0, 32000)}`;
                   resolution: String(obj.resolution || "").trim(),
                 };
               })
-              .filter(
-                (c) => c.claim && c.sourceA.url && c.sourceB.url && c.resolution,
-              )
+              .filter((c) => c.claim && c.sourceA.url && c.sourceB.url && c.resolution)
           : [],
         gaps: Array.isArray(parsed.gaps)
           ? parsed.gaps.map((g) => String(g).trim()).filter(Boolean)
           : [],
-        sourceIndex:
-          sourceIndex.length > 0 ? sourceIndex : buildFallbackSourceIndex(findings),
+        sourceIndex: sourceIndex.length > 0 ? sourceIndex : buildFallbackSourceIndex(findings),
         generatedAt: new Date().toISOString(),
         objectives,
       };

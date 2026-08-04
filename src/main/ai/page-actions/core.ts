@@ -14,6 +14,7 @@ export interface ActionContext {
   tabManager: TabManager;
   runtime: AgentRuntime;
   toolProfile?: AgentToolProfile;
+  runId?: string;
   /** When set, executeAction switches to this tab before running the action */
   tabId?: string;
   /** Internal: serializes tab-switched actions across parallel callers */

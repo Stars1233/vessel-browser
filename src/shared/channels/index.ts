@@ -5,6 +5,7 @@ import { BookmarkChannels } from "./bookmark-channels";
 import { BrowsingDataChannels } from "./browsing-data-channels";
 import { CodexChannels } from "./codex-channels";
 import { ContentChannels } from "./content-channels";
+import { ConversationChannels } from "./conversation-channels";
 import { DevToolsChannels } from "./devtools-channels";
 import { DownloadChannels } from "./download-channels";
 import { HighlightChannels } from "./highlight-channels";
@@ -14,7 +15,9 @@ import { McpChannels } from "./mcp-channels";
 import { OpenRouterChannels } from "./openrouter-channels";
 import { PermissionChannels } from "./permission-channels";
 import { PremiumChannels } from "./premium-channels";
+import { PolicyChannels } from "./policy-channels";
 import { ResearchChannels } from "./research-channels";
+import { RunChannels } from "./run-channels";
 import { SecurityChannels } from "./security-channels";
 import { SessionChannels } from "./session-channels";
 import { SettingsChannels } from "./settings-channels";
@@ -39,6 +42,7 @@ export const Channels = {
   ...BrowsingDataChannels,
   ...CodexChannels,
   ...ContentChannels,
+  ...ConversationChannels,
   ...DevToolsChannels,
   ...DownloadChannels,
   ...HighlightChannels,
@@ -48,7 +52,9 @@ export const Channels = {
   ...OpenRouterChannels,
   ...PermissionChannels,
   ...PremiumChannels,
+  ...PolicyChannels,
   ...ResearchChannels,
+  ...RunChannels,
   ...SecurityChannels,
   ...SessionChannels,
   ...SettingsChannels,
@@ -70,6 +76,7 @@ export {
   BrowsingDataChannels,
   CodexChannels,
   ContentChannels,
+  ConversationChannels,
   DevToolsChannels,
   DownloadChannels,
   HighlightChannels,
@@ -79,7 +86,9 @@ export {
   OpenRouterChannels,
   PermissionChannels,
   PremiumChannels,
+  PolicyChannels,
   ResearchChannels,
+  RunChannels,
   SecurityChannels,
   SessionChannels,
   SettingsChannels,

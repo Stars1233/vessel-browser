@@ -8,6 +8,7 @@
   <a href="https://www.producthunt.com/products/quanta-intellect?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vessel-browser-from-quanta-intellect" target="_blank" rel="noopener noreferrer"><img alt="Vessel Browser from Quanta Intellect - The browser where agents drive and humans supervise | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1107491&amp;theme=dark&amp;t=1774779141692"></a>
 
 # Vessel: Your AI-Powered Browser
+
 </div>
 
 Vessel is a simple, clean web browser with an AI assistant built in. Browse the web normally, then ask Vessel to help research, navigate pages, summarize what you are reading, fill forms, or keep track of longer tasks.
@@ -15,13 +16,13 @@ Vessel is a simple, clean web browser with an AI assistant built in. Browse the 
 Unlike invisible browser automation, Vessel shows you what the AI is doing in a real browser window. You can follow along, approve important actions, pause or redirect the work, and take over whenever you want.
 
 - **A familiar browser, with AI help nearby** — tabs, bookmarks, reader mode, downloads, and a sidebar assistant for web tasks
-- **Great for longer browsing sessions** — save named sessions, checkpoints, notes, bookmarks, and page changes so you can pick up where you left off
-- **You stay in control** — review what the AI is doing, approve sensitive actions, undo recent changes, and switch back to manual browsing at any time
+- **Great for longer browsing sessions** — durable conversation threads, a cross-source run inbox, named sessions, checkpoints, notes, bookmarks, and page changes make interrupted work recoverable
+- **You stay in control** — review what the AI is doing, approve sensitive actions once or for a scoped run/domain, reject with steering, undo recent changes, and switch back to manual browsing at any time
 - **Open source and extensible** — built on Chromium, with advanced automation support for MCP clients and agent tools when you need it
 
 Linux is the most mature install target today. macOS release packaging is available from source.
 
-*Vessel is in active development. Treat it as early software, especially for sensitive browsing or account access.*
+_Vessel is in active development. Treat it as early software, especially for sensitive browsing or account access._
 
 https://github.com/user-attachments/assets/0a72b48a-873a-4eb0-b8f2-23e34d8472c4
 
@@ -88,13 +89,16 @@ For power users and developers, the same foundation also supports external agent
 - **AI-assisted browsing** — ask Vessel to help with research, page reading, navigation, form work, and multi-step web tasks
 - **Human-visible browser UI** — pages render like a normal browser so AI activity stays legible instead of disappearing into a hidden run
 - **Command Bar** (`Ctrl+L`) — a secondary operator surface for harness-driven workflows and future runtime commands
-- **Supervisor Sidebar** (`Ctrl+Shift+L`) — live supervision across eight tabs: Supervisor, Bookmarks, Checkpoints, Chat, Skills, History, Changes, and Research
+- **Supervisor Sidebar** (`Ctrl+Shift+L`) — live supervision across ten tabs, including a durable Run Inbox, conversation Threads, approvals, checkpoints, changes, and Research
 - **Chat Assistant** — built-in conversational AI in the sidebar Chat tab; supports Anthropic, OpenAI, Ollama, llama.cpp, Mistral, xAI, Google Gemini, OpenRouter, and any OpenAI-compatible endpoint; reads the current page automatically; has full access to the same browser tools as external agents; multi-turn session history; configure provider, model, and API key in Settings
 - **Skills** (Premium) — reusable browser skills in the sidebar Skills tab; import, view, run, or delete skills the built-in agent can use for research, shopping, and site-specific workflows
 - **Research Desk** (Beta) — a dedicated sidebar Research tab for structured research reports; start with a topic, complete an in-tab briefing, let Vessel draft research objectives, approve the plan, then dispatch browser sub-agents to collect source-backed claims and synthesize a markdown-exportable report. Starting the brief is free; plan approval, sub-agent execution, and report export require Vessel Premium.
 - **Dev Tools Panel** (`F12`) — inspect console output, network requests, and MCP/agent activity in a resizable panel at the bottom of the window; export logs by category and date range as JSON
 - **Browser Basics For Long Runs** — pinned tabs stay compact at the front of the tab strip and are protected from accidental close; tab groups can be color-coded and collapsed; audible tabs show audio indicators with mute controls; open additional browser windows with `Ctrl+N`; print the active page with `Ctrl+P` or save it directly as PDF with `Ctrl+Shift+P`
 - **Action Undo / Rollback** — restore the browser to the session snapshot captured immediately before the last successful mutating agent action; available from the Supervisor tab and through the `undo_last_action` tool
+- **Durable Run Inbox** — Chat, MCP, scheduled, and Research work share one persisted lifecycle with status filters, parent/child research runs, redacted inputs, outputs, errors, and tab context
+- **Persistent Conversation Threads** — group multiple independent chats inside named threads; each chat gets an AI-generated title after its first completed exchange and can be reopened or retitled, while threads can be renamed, archived, or deleted and remain subject to the configured history period
+- **Scoped Approval Policies** — approve once, approve for a run, approve for a domain, or reject and steer; explicit denies take precedence and expired scoped rules are ignored
 - **Agent-Meaningful Bookmarks** — bookmarks carry structured context the agent can read and act on: `intent` (what the page is for), `expectedContent` (what to expect on the page), `keyFields` (important form fields), `agentHints` (arbitrary directives), and a stored `pageSchema`; humans can create and edit this metadata directly in the Bookmarks tab, and all fields are searchable
 - **Portable Bookmark Export** — export browser-compatible Netscape HTML for import into Chrome, Firefox, Safari, Edge, Brave, and other browsers; optionally include Vessel notes/agent metadata, or export a full-fidelity Vessel JSON archive
 - **Page Schema Inference** — Vessel automatically infers a typed schema for every page: `pageType` (article, product, form, search, checkout, login, dashboard), `primaryEntity` (structured fields for products and articles), `formFields` (with names, types, labels, selectors), and `actionButtons` (with inferred intents: submit, addToCart, login, etc.); schema is attached to every content extraction result
@@ -133,14 +137,14 @@ That means the product should optimize for:
 
 ## Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Engine | Chromium (Electron 40) |
-| UI Framework | SolidJS |
-| Language | TypeScript |
-| Build | electron-vite + Vite |
-| AI Control | External agent harnesses (Hermes Agent, OpenClaw, MCP clients) + built-in chat (Anthropic, OpenAI, Ollama, llama.cpp, and any OAI-compatible endpoint) |
-| Content Extraction | @mozilla/readability |
+| Layer              | Technology                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Engine             | Chromium (Electron 40)                                                                                                                                 |
+| UI Framework       | SolidJS                                                                                                                                                |
+| Language           | TypeScript                                                                                                                                             |
+| Build              | electron-vite + Vite                                                                                                                                   |
+| AI Control         | External agent harnesses (Hermes Agent, OpenClaw, MCP clients) + built-in chat (Anthropic, OpenAI, Ollama, llama.cpp, and any OAI-compatible endpoint) |
+| Content Extraction | @mozilla/readability                                                                                                                                   |
 
 ## Architecture
 
@@ -503,24 +507,24 @@ vessel-browser-launch --dry-run
 
 ## Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+L` | AI Command Bar |
-| `Ctrl+Shift+L` | Toggle AI Sidebar |
-| `Ctrl+Shift+F` | Toggle Focus Mode |
-| `F12` | Toggle Dev Tools Panel |
-| `Ctrl+N` | New Window |
-| `Ctrl+T` | New Tab |
-| `Ctrl+W` | Close Tab |
-| `Ctrl+Shift+T` | Reopen Closed Tab |
-| `Ctrl+Shift+N` | New Private Window |
-| `Ctrl+F` | Find in Page |
-| `Ctrl++` / `Ctrl+=` | Zoom In |
-| `Ctrl+-` | Zoom Out |
-| `Ctrl+0` | Reset Zoom |
-| `Ctrl+P` | Print Active Page |
-| `Ctrl+Shift+P` | Save Active Page as PDF |
-| `Ctrl+,` | Settings |
+| Shortcut            | Action                  |
+| ------------------- | ----------------------- |
+| `Ctrl+L`            | AI Command Bar          |
+| `Ctrl+Shift+L`      | Toggle AI Sidebar       |
+| `Ctrl+Shift+F`      | Toggle Focus Mode       |
+| `F12`               | Toggle Dev Tools Panel  |
+| `Ctrl+N`            | New Window              |
+| `Ctrl+T`            | New Tab                 |
+| `Ctrl+W`            | Close Tab               |
+| `Ctrl+Shift+T`      | Reopen Closed Tab       |
+| `Ctrl+Shift+N`      | New Private Window      |
+| `Ctrl+F`            | Find in Page            |
+| `Ctrl++` / `Ctrl+=` | Zoom In                 |
+| `Ctrl+-`            | Zoom Out                |
+| `Ctrl+0`            | Reset Zoom              |
+| `Ctrl+P`            | Print Active Page       |
+| `Ctrl+Shift+P`      | Save Active Page as PDF |
+| `Ctrl+,`            | Settings                |
 
 ## Project Structure
 
@@ -579,4 +583,4 @@ src/
 
 MIT
 
-*Developed by Tyler Williams in Portland, Oregon (2026)*
+_Developed by Tyler Williams in Portland, Oregon (2026)_
