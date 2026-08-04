@@ -15,6 +15,9 @@ import { useUI } from "../../stores/ui";
 import { useTabs } from "../../stores/tabs";
 import { useHistory } from "../../stores/history";
 import { useBookmarks } from "../../stores/bookmarks";
+import { useRuns } from "../../stores/runs";
+import { useConversations } from "../../stores/conversations";
+import { usePolicies } from "../../stores/policies";
 import { buildAndRememberBookmarkContext } from "../../lib/bookmark-context";
 import {
   BUNDLED_KITS,
@@ -52,6 +55,13 @@ const UNSORTED_FOLDER: BookmarkFolder = {
   createdAt: "",
 };
 
+function runAgeBucket(createdAt: string): "Today" | "Previous 7 days" | "Older" {
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  if (ageMs < 24 * 60 * 60 * 1000) return "Today";
+  if (ageMs < 7 * 24 * 60 * 60 * 1000) return "Previous 7 days";
+  return "Older";
+}
+
 const MarkdownMessage = (props: { content: string }) => {
   const html = createMemo(() => renderMarkdown(props.content));
   const handleClick = (event: MouseEvent) => {
@@ -65,13 +75,7 @@ const MarkdownMessage = (props: { content: string }) => {
     group.classList.toggle("expanded", expanded);
   };
 
-  return (
-    <div
-      class="message-content markdown-content"
-      innerHTML={html()}
-      onClick={handleClick}
-    />
-  );
+  return <div class="message-content markdown-content" innerHTML={html()} onClick={handleClick} />;
 };
 
 type PremiumPromptKind = "premium_gate" | "iteration_limit";
@@ -93,19 +97,14 @@ const PremiumPromptCard = (props: {
   compact?: boolean;
 }) => {
   const title =
-    props.kind === "premium_gate"
-      ? "This workflow needs Premium"
-      : "Need a longer autonomous run?";
+    props.kind === "premium_gate" ? "This workflow needs Premium" : "Need a longer autonomous run?";
   const body =
     props.kind === "premium_gate"
       ? "Unlock screenshots, saved sessions, workflow tracking, table extraction, and the credential vault with a 7-day free trial."
       : "Free chats pause after 50 tool calls in a turn. Vessel Premium raises the ceiling so the agent can finish longer workflows without stopping.";
 
   return (
-    <div
-      class="premium-inline-offer"
-      classList={{ compact: props.compact === true }}
-    >
+    <div class="premium-inline-offer" classList={{ compact: props.compact === true }}>
       <div class="premium-inline-kicker">Vessel Premium</div>
       <div class="premium-inline-title">{title}</div>
       <p class="premium-inline-copy">{body}</p>
@@ -143,6 +142,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     removePendingQuery,
     clearPendingQueries,
     clearHistory,
+    loadConversation,
     query,
     runAutomationPrompt,
     cancel,
@@ -184,8 +184,31 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     removeFolder,
     renameFolder,
   } = useBookmarks();
+  const {
+    runs,
+    selectedRun,
+    selectRun,
+    clearSelection: clearRunSelection,
+    deleteRun,
+    exportRun,
+  } = useRuns();
+  const {
+    threads,
+    selectedThread,
+    selectThread,
+    clearSelection: clearThreadSelection,
+    createThread,
+    createChat,
+    renameChat,
+    renameThread,
+    archiveThread,
+    deleteThread,
+  } = useConversations();
+  const { policyRules, removeRule } = usePolicies();
   const [sidebarTab, setSidebarTab] = createSignal<
     | "supervisor"
+    | "runs"
+    | "conversations"
     | "bookmarks"
     | "checkpoints"
     | "chat"
@@ -196,6 +219,14 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   >("supervisor");
   const [chatInput, setChatInput] = createSignal("");
   const [chatCommandError, setChatCommandError] = createSignal<string | null>(null);
+  const [approvalSteering, setApprovalSteering] = createSignal<Record<string, string>>({});
+  const [threadRename, setThreadRename] = createSignal("");
+  const [chatRenames, setChatRenames] = createSignal<Record<string, string>>({});
+  const [editingChatId, setEditingChatId] = createSignal<string | null>(null);
+  const [runFilter, setRunFilter] = createSignal<
+    "attention" | "active" | "failed" | "completed" | "all"
+  >("attention");
+  const [newThreadTitle, setNewThreadTitle] = createSignal("");
   const [installedSkillKits, setInstalledSkillKits] = createSignal<AutomationKit[]>([]);
   const [slashSuggestionIndex, setSlashSuggestionIndex] = createSignal(0);
   const [highlightCount, setHighlightCount] = createSignal(0);
@@ -210,14 +241,22 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   });
   const trackedPremiumContexts = new Set<string>();
 
+  const filteredRuns = createMemo(() => {
+    const filter = runFilter();
+    if (filter === "all") return runs();
+    if (filter === "attention") {
+      return runs().filter((run) =>
+        ["waiting-approval", "failed", "interrupted"].includes(run.status),
+      );
+    }
+    if (filter === "active") {
+      return runs().filter((run) => ["running", "waiting-approval"].includes(run.status));
+    }
+    return runs().filter((run) => run.status === filter);
+  });
   const isPremium = () => isPremiumStatus(premiumState().status);
-  const allSkillKits = createMemo(() => [
-    ...BUNDLED_KITS,
-    ...installedSkillKits(),
-  ]);
-  const slashSuggestions = createMemo(() =>
-    getSkillSlashSuggestions(chatInput(), allSkillKits()),
-  );
+  const allSkillKits = createMemo(() => [...BUNDLED_KITS, ...installedSkillKits()]);
+  const slashSuggestions = createMemo(() => getSkillSlashSuggestions(chatInput(), allSkillKits()));
   const recognizedSkillInvocation = createMemo(() => {
     const input = chatInput().trimStart();
     if (!input.startsWith("/")) return null;
@@ -262,10 +301,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   };
 
   const openPremiumCheckout = (
-    step:
-      | "chat_banner_clicked"
-      | "premium_gate_clicked"
-      | "iteration_limit_clicked",
+    step: "chat_banner_clicked" | "premium_gate_clicked" | "iteration_limit_clicked",
   ) => {
     trackPremiumContext(step);
     void window.vessel.premium.checkout(premiumState().email || undefined);
@@ -276,9 +312,12 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   };
 
   onMount(() => {
-    void window.vessel.premium.getState().then(setPremiumState).catch(() => {
-      /* premium API unavailable */
-    });
+    void window.vessel.premium
+      .getState()
+      .then(setPremiumState)
+      .catch(() => {
+        /* premium API unavailable */
+      });
     const cleanup = window.vessel.premium.onUpdate(setPremiumState);
     onCleanup(cleanup);
     void loadInstalledSkillKits();
@@ -391,38 +430,30 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   });
 
   createEffect(() => {
-    const unsubscribe = window.vessel.bookmarks.onAddContextToChat(
-      (bookmarkId) => {
-        const bookmark = bookmarksState().bookmarks.find(
-          (item) => item.id === bookmarkId,
-        );
-        if (!bookmark) return;
+    const unsubscribe = window.vessel.bookmarks.onAddContextToChat((bookmarkId) => {
+      const bookmark = bookmarksState().bookmarks.find((item) => item.id === bookmarkId);
+      if (!bookmark) return;
 
-        const folder =
-          bookmark.folderId === UNSORTED_FOLDER.id
-            ? UNSORTED_FOLDER
-            : (bookmarksState().folders.find(
-                (item) => item.id === bookmark.folderId,
-              ) ?? null);
-        const contextBlock = buildAndRememberBookmarkContext({
-          bookmark,
-          folder,
-          messages: messages(),
-        });
+      const folder =
+        bookmark.folderId === UNSORTED_FOLDER.id
+          ? UNSORTED_FOLDER
+          : (bookmarksState().folders.find((item) => item.id === bookmark.folderId) ?? null);
+      const contextBlock = buildAndRememberBookmarkContext({
+        bookmark,
+        folder,
+        messages: messages(),
+      });
 
-        setSidebarTab("chat");
-        setChatInput((current) =>
-          current.trim()
-            ? `${current.trim()}\n\n${contextBlock}`
-            : contextBlock,
-        );
-        queueMicrotask(() => {
-          chatInputRef?.focus();
-          const length = chatInputRef?.value.length ?? 0;
-          chatInputRef?.setSelectionRange(length, length);
-        });
-      },
-    );
+      setSidebarTab("chat");
+      setChatInput((current) =>
+        current.trim() ? `${current.trim()}\n\n${contextBlock}` : contextBlock,
+      );
+      queueMicrotask(() => {
+        chatInputRef?.focus();
+        const length = chatInputRef?.value.length ?? 0;
+        chatInputRef?.setSelectionRange(length, length);
+      });
+    });
     onCleanup(unsubscribe);
   });
 
@@ -436,10 +467,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
       const kits = [...BUNDLED_KITS, ...installedKits];
       const invocation = parseSkillSlashInvocation(prompt, kits);
       if (invocation) {
-        const { values, missingLabels } = buildSlashSkillValues(
-          invocation.kit,
-          invocation.task,
-        );
+        const { values, missingLabels } = buildSlashSkillValues(invocation.kit, invocation.task);
         if (missingLabels.length > 0) {
           setChatCommandError(
             `${invocation.kit.name} needs ${missingLabels.join(", ")}. Open Skills to run it with all fields.`,
@@ -486,10 +514,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   const applyActiveSkillSuggestion = (): boolean => {
     const suggestions = slashSuggestions();
     if (suggestions.length === 0) return false;
-    const index = Math.max(
-      0,
-      Math.min(slashSuggestionIndex(), suggestions.length - 1),
-    );
+    const index = Math.max(0, Math.min(slashSuggestionIndex(), suggestions.length - 1));
     applySkillSuggestion(suggestions[index]);
     return true;
   };
@@ -514,14 +539,11 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   const [checkpointNote, setCheckpointNote] = createSignal("");
   const [bookmarkNote, setBookmarkNote] = createSignal("");
   const [bookmarkIntent, setBookmarkIntent] = createSignal("");
-  const [bookmarkExpectedContent, setBookmarkExpectedContent] =
-    createSignal("");
+  const [bookmarkExpectedContent, setBookmarkExpectedContent] = createSignal("");
   const [bookmarkKeyFields, setBookmarkKeyFields] = createSignal("");
   const [bookmarkAgentHints, setBookmarkAgentHints] = createSignal("");
   const [bookmarkSaveExpanded, setBookmarkSaveExpanded] = createSignal(false);
-  const [selectedFolderId, setSelectedFolderId] = createSignal<string>(
-    UNSORTED_FOLDER.id,
-  );
+  const [selectedFolderId, setSelectedFolderId] = createSignal<string>(UNSORTED_FOLDER.id);
   const [newFolderName, setNewFolderName] = createSignal("");
   const [newFolderSummary, setNewFolderSummary] = createSignal("");
   const [bookmarkSearchQuery, setBookmarkSearchQuery] = createSignal("");
@@ -530,29 +552,18 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   const [bookmarkImportExpanded, setBookmarkImportExpanded] = createSignal(false);
   const [bookmarkImporting, setBookmarkImporting] = createSignal(false);
   const [bookmarkImportMessage, setBookmarkImportMessage] = createSignal("");
-  const [editingFolderId, setEditingFolderId] = createSignal<string | null>(
-    null,
-  );
+  const [editingFolderId, setEditingFolderId] = createSignal<string | null>(null);
   const [editingFolderName, setEditingFolderName] = createSignal("");
   const [editingFolderSummary, setEditingFolderSummary] = createSignal("");
-  const [editingBookmarkId, setEditingBookmarkId] = createSignal<string | null>(
-    null,
-  );
+  const [editingBookmarkId, setEditingBookmarkId] = createSignal<string | null>(null);
   const [editingBookmarkTitle, setEditingBookmarkTitle] = createSignal("");
   const [editingBookmarkNote, setEditingBookmarkNote] = createSignal("");
   const [editingBookmarkIntent, setEditingBookmarkIntent] = createSignal("");
-  const [editingBookmarkExpectedContent, setEditingBookmarkExpectedContent] =
-    createSignal("");
-  const [editingBookmarkKeyFields, setEditingBookmarkKeyFields] =
-    createSignal("");
-  const [editingBookmarkAgentHints, setEditingBookmarkAgentHints] =
-    createSignal("");
-  const [deletingFolderId, setDeletingFolderId] = createSignal<string | null>(
-    null,
-  );
-  const [expandedFolderIds, setExpandedFolderIds] = createSignal<string[]>([
-    UNSORTED_FOLDER.id,
-  ]);
+  const [editingBookmarkExpectedContent, setEditingBookmarkExpectedContent] = createSignal("");
+  const [editingBookmarkKeyFields, setEditingBookmarkKeyFields] = createSignal("");
+  const [editingBookmarkAgentHints, setEditingBookmarkAgentHints] = createSignal("");
+  const [deletingFolderId, setDeletingFolderId] = createSignal<string | null>(null);
+  const [expandedFolderIds, setExpandedFolderIds] = createSignal<string[]>([UNSORTED_FOLDER.id]);
   const [actionsExpanded, setActionsExpanded] = createSignal(false);
   const [isDragging, setIsDragging] = createSignal(false);
   const now = useNow();
@@ -560,15 +571,11 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   let messagesEndRef: HTMLDivElement | undefined;
   let chatInputRef: HTMLTextAreaElement | undefined;
   let hasInitializedMessageScroll = false;
-  const recentActions = createMemo(() =>
-    runtimeState().actions.slice(-8).reverse(),
-  );
+  const recentActions = createMemo(() => runtimeState().actions.slice(-8).reverse());
   const openAgentTrace = () => {
     void window.vessel.devtoolsPanel.openTab("agentTrace");
   };
-  const recentCheckpoints = createMemo(() =>
-    runtimeState().checkpoints.slice(-5).reverse(),
-  );
+  const recentCheckpoints = createMemo(() => runtimeState().checkpoints.slice(-5).reverse());
   const approvalModeOptions = createMemo(() => [
     {
       value: "manual",
@@ -578,8 +585,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     {
       value: "confirm-dangerous",
       label: "Ask for risky actions",
-      description:
-        "Allow routine actions, but stop on destructive or sensitive ones.",
+      description: "Allow routine actions, but stop on destructive or sensitive ones.",
     },
     {
       value: "auto",
@@ -590,14 +596,11 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   const approvalModeDescription = createMemo(() => {
     const currentMode = runtimeState().supervisor.approvalMode;
     return (
-      approvalModeOptions().find((option) => option.value === currentMode)
-        ?.description ?? "Controls when the supervisor must approve actions."
+      approvalModeOptions().find((option) => option.value === currentMode)?.description ??
+      "Controls when the supervisor must approve actions."
     );
   });
-  const bookmarkFolders = createMemo(() => [
-    UNSORTED_FOLDER,
-    ...bookmarksState().folders,
-  ]);
+  const bookmarkFolders = createMemo(() => [UNSORTED_FOLDER, ...bookmarksState().folders]);
   const bookmarkFolderOptions = createMemo(() =>
     bookmarkFolders().map((folder) => ({
       value: folder.id,
@@ -655,18 +658,13 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
       .filter((folder) => folder.items.length > 0);
   });
   const bookmarkMatchCount = createMemo(() =>
-    filteredGroupedBookmarks().reduce(
-      (total, folder) => total + folder.items.length,
-      0,
-    ),
+    filteredGroupedBookmarks().reduce((total, folder) => total + folder.items.length, 0),
   );
   const currentTab = createMemo(() => activeTab());
   const currentTabSaved = createMemo(() => {
     const tab = currentTab();
     if (!tab?.url) return false;
-    return bookmarksState().bookmarks.some(
-      (bookmark) => bookmark.url === tab.url,
-    );
+    return bookmarksState().bookmarks.some((bookmark) => bookmark.url === tab.url);
   });
 
   // Auto-scroll to bottom on new messages
@@ -807,9 +805,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     return fields.length > 0 ? fields : undefined;
   };
 
-  const parseBookmarkAgentHints = (
-    value: string,
-  ): Record<string, string> | undefined => {
+  const parseBookmarkAgentHints = (value: string): Record<string, string> | undefined => {
     const entries = value
       .split("\n")
       .map((line) => {
@@ -911,10 +907,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     setEditingFolderSummary("");
   };
 
-  const handleRemoveFolder = async (
-    folderId: string,
-    deleteContents: boolean,
-  ) => {
+  const handleRemoveFolder = async (folderId: string, deleteContents: boolean) => {
     const removed = await removeFolder(folderId, deleteContents);
     if (!removed) return;
     setDeletingFolderId(null);
@@ -943,18 +936,14 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
       );
     } catch (error) {
       setBookmarkExportMessage(
-        error instanceof Error
-          ? error.message
-          : `Could not export ${folderName}.`,
+        error instanceof Error ? error.message : `Could not export ${folderName}.`,
       );
     } finally {
       setBookmarkExporting(false);
     }
   };
 
-  const handleExportBookmarks = async (
-    format: "html" | "html-with-notes" | "json",
-  ) => {
+  const handleExportBookmarks = async (format: "html" | "html-with-notes" | "json") => {
     setBookmarkExporting(true);
     setBookmarkExportMessage("");
     try {
@@ -966,9 +955,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
         setBookmarkExportMessage("Export canceled.");
         return;
       }
-      setBookmarkExportMessage(
-        `Exported ${result.count} bookmarks to ${result.filePath}`,
-      );
+      setBookmarkExportMessage(`Exported ${result.count} bookmarks to ${result.filePath}`);
     } catch (error) {
       setBookmarkExportMessage(
         error instanceof Error ? error.message : "Could not export bookmarks.",
@@ -1004,15 +991,12 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
 
   const toggleFolderExpanded = (folderId: string) => {
     setExpandedFolderIds((current) =>
-      current.includes(folderId)
-        ? current.filter((id) => id !== folderId)
-        : [...current, folderId],
+      current.includes(folderId) ? current.filter((id) => id !== folderId) : [...current, folderId],
     );
   };
 
   const isFolderExpanded = (folderId: string) =>
-    normalizedBookmarkSearch().length > 0 ||
-    expandedFolderIds().includes(folderId);
+    normalizedBookmarkSearch().length > 0 || expandedFolderIds().includes(folderId);
 
   onMount(() => {
     const cleanup = window.vessel.ui.onSidebarNavigate((tab) => {
@@ -1033,10 +1017,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
 
   return (
     <Show when={props.forceOpen || sidebarOpen()}>
-      <div
-        class="sidebar"
-        style={{ width: sidebarDetached() ? "100%" : `${sidebarWidth()}px` }}
-      >
+      <div class="sidebar" style={{ width: sidebarDetached() ? "100%" : `${sidebarWidth()}px` }}>
         <Show when={!sidebarDetached()}>
           <div
             class="sidebar-resize-handle"
@@ -1050,11 +1031,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
             <span class="sidebar-brand-text">Vessel Browser</span>
           </div>
           <div class="sidebar-header-actions">
-            <button
-              class="sidebar-clear"
-              onClick={clearHistory}
-              title="Clear chat"
-            >
+            <button class="sidebar-clear" onClick={clearHistory} title="Clear chat">
               Clear
             </button>
             <SidebarWindowControls
@@ -1080,6 +1057,29 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 {runtimeState().supervisor.pendingApprovals.length}
               </span>
             </Show>
+          </button>
+          <button
+            class="sidebar-tab"
+            classList={{ active: sidebarTab() === "runs" }}
+            role="tab"
+            aria-selected={sidebarTab() === "runs"}
+            onClick={() => setSidebarTab("runs")}
+          >
+            Runs
+            <Show when={runs().some((run) => run.status === "waiting-approval")}>
+              <span class="sidebar-tab-badge">
+                {runs().filter((run) => run.status === "waiting-approval").length}
+              </span>
+            </Show>
+          </button>
+          <button
+            class="sidebar-tab"
+            classList={{ active: sidebarTab() === "conversations" }}
+            role="tab"
+            aria-selected={sidebarTab() === "conversations"}
+            onClick={() => setSidebarTab("conversations")}
+          >
+            Threads
           </button>
           <button
             class="sidebar-tab"
@@ -1160,9 +1160,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 <div>
                   <div class="agent-panel-title">Supervisor</div>
                   <div class="agent-panel-subtitle">
-                    {runtimeState().supervisor.paused
-                      ? "Agent is paused"
-                      : "Agent is live"}
+                    {runtimeState().supervisor.paused ? "Agent is paused" : "Agent is live"}
                   </div>
                 </div>
                 <span
@@ -1180,17 +1178,13 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   options={approvalModeOptions()}
                   ariaLabel="Approval mode"
                   onChange={(value) =>
-                    void setApprovalMode(
-                      value as "auto" | "confirm-dangerous" | "manual",
-                    )
+                    void setApprovalMode(value as "auto" | "confirm-dangerous" | "manual")
                   }
                 />
                 <button
                   class="agent-control-button"
                   type="button"
-                  onClick={() =>
-                    void (runtimeState().supervisor.paused ? resume() : pause())
-                  }
+                  onClick={() => void (runtimeState().supervisor.paused ? resume() : pause())}
                 >
                   {runtimeState().supervisor.paused ? "Resume" : "Pause"}
                 </button>
@@ -1227,31 +1221,80 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 <For each={runtimeState().supervisor.pendingApprovals}>
                   {(approval) => (
                     <div class="agent-card agent-card-approval">
-                      <div
-                        class="agent-card-approval-stripe"
-                        aria-hidden="true"
-                      />
+                      <div class="agent-card-approval-stripe" aria-hidden="true" />
                       <div class="agent-card-title">{approval.name}</div>
-                      <div class="agent-card-copy">{approval.argsSummary}</div>
                       <div class="agent-card-copy">{approval.reason}</div>
+                      <div class="agent-card-copy">{JSON.stringify(approval.redactedArgs)}</div>
+                      <Show when={approval.domain}>
+                        <div class="agent-card-copy">Domain: {approval.domain}</div>
+                      </Show>
+                      <div class="agent-card-copy">
+                        {approval.undoable ? "Undo available" : "This action is not undoable"}
+                      </div>
                       <div class="agent-card-actions">
                         <button
                           class="agent-primary-button"
                           type="button"
                           onClick={() =>
-                            void resolveApproval(approval.id, true)
+                            void resolveApproval(approval.id, { decision: "approve-once" })
                           }
                         >
-                          Approve
+                          Approve once
                         </button>
+                        <Show when={approval.runId}>
+                          <button
+                            class="agent-control-button"
+                            type="button"
+                            onClick={() =>
+                              void resolveApproval(approval.id, { decision: "approve-run" })
+                            }
+                          >
+                            Approve for run
+                          </button>
+                        </Show>
+                        <Show when={approval.domain}>
+                          <button
+                            class="agent-control-button"
+                            type="button"
+                            onClick={() =>
+                              void resolveApproval(approval.id, { decision: "approve-domain" })
+                            }
+                          >
+                            Approve for domain
+                          </button>
+                        </Show>
                         <button
                           class="agent-control-button"
                           type="button"
-                          onClick={() =>
-                            void resolveApproval(approval.id, false)
-                          }
+                          onClick={() => void resolveApproval(approval.id, { decision: "reject" })}
                         >
                           Reject
+                        </button>
+                      </div>
+                      <div class="agent-card-actions">
+                        <input
+                          class="agent-steering-input"
+                          value={approvalSteering()[approval.id] ?? ""}
+                          placeholder="Tell the agent what to do instead"
+                          onInput={(event) =>
+                            setApprovalSteering((current) => ({
+                              ...current,
+                              [approval.id]: event.currentTarget.value,
+                            }))
+                          }
+                        />
+                        <button
+                          class="agent-control-button"
+                          type="button"
+                          disabled={!approvalSteering()[approval.id]?.trim()}
+                          onClick={() =>
+                            void resolveApproval(approval.id, {
+                              decision: "reject-steer",
+                              steering: approvalSteering()[approval.id]!.trim(),
+                            })
+                          }
+                        >
+                          Reject and steer
                         </button>
                       </div>
                     </div>
@@ -1280,9 +1323,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 <Show
                   when={actionsExpanded()}
                   fallback={
-                    <div class="agent-muted">
-                      Recent actions are collapsed to reduce noise.
-                    </div>
+                    <div class="agent-muted">Recent actions are collapsed to reduce noise.</div>
                   }
                 >
                   <For each={recentActions()}>
@@ -1296,14 +1337,10 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                         </div>
                         <div class="agent-card-copy">{action.argsSummary}</div>
                         <Show when={action.resultSummary}>
-                          <div class="agent-card-copy success">
-                            {action.resultSummary}
-                          </div>
+                          <div class="agent-card-copy success">{action.resultSummary}</div>
                         </Show>
                         <Show when={action.error}>
-                          <div class="agent-card-copy error">
-                            {action.error}
-                          </div>
+                          <div class="agent-card-copy error">{action.error}</div>
                         </Show>
                       </div>
                     )}
@@ -1311,19 +1348,376 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 </Show>
               </Show>
 
+              <div class="agent-section-title">Scoped policy rules</div>
+              <Show
+                when={policyRules().length > 0}
+                fallback={<div class="agent-muted">No scoped policy rules.</div>}
+              >
+                <For each={policyRules()}>
+                  {(rule) => (
+                    <div class="agent-card">
+                      <div class="agent-card-title">
+                        {rule.decision.toUpperCase()} {rule.actionClass}
+                      </div>
+                      <div class="agent-card-copy">
+                        {rule.scope}
+                        {rule.domain ? ` · ${rule.domain}` : ""}
+                        {rule.runId ? ` · ${rule.runId}` : ""}
+                      </div>
+                      <div class="agent-card-copy">{rule.reason}</div>
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() => void removeRule(rule.id)}
+                      >
+                        Remove rule
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </Show>
+
               <div class="agent-trace-footer">
                 <span>
-                  Showing the last 8 actions. More traces are available in
-                  DevTools -&gt; Agent Trace.
+                  Showing the last 8 actions. More traces are available in DevTools -&gt; Agent
+                  Trace.
                 </span>
-                <button
-                  class="agent-trace-link"
-                  type="button"
-                  onClick={openAgentTrace}
-                >
+                <button class="agent-trace-link" type="button" onClick={openAgentTrace}>
                   Open Agent Trace
                 </button>
               </div>
+            </section>
+          </Show>
+          <Show when={sidebarTab() === "runs"}>
+            <section class="agent-panel">
+              <div class="agent-panel-header">
+                <div>
+                  <div class="agent-panel-title">Run Inbox</div>
+                  <div class="agent-muted">
+                    Durable Chat, MCP, scheduled, and research activity.
+                  </div>
+                </div>
+              </div>
+              <div class="agent-card-actions">
+                <For each={["attention", "active", "failed", "completed", "all"] as const}>
+                  {(filter) => (
+                    <button
+                      class="agent-control-button"
+                      classList={{ active: runFilter() === filter }}
+                      type="button"
+                      onClick={() => setRunFilter(filter)}
+                    >
+                      {filter === "attention" ? "Needs attention" : filter}
+                    </button>
+                  )}
+                </For>
+              </div>
+              <Show
+                when={!selectedRun()}
+                fallback={
+                  <div class="agent-card run-detail">
+                    <button class="agent-control-button" type="button" onClick={clearRunSelection}>
+                      Back to runs
+                    </button>
+                    <div class="agent-card-title">{selectedRun()!.title}</div>
+                    <div class="agent-card-copy">
+                      {selectedRun()!.source} · {selectedRun()!.status}
+                    </div>
+                    <div class="agent-card-copy">{selectedRun()!.goal}</div>
+                    <Show when={selectedRun()!.outputSummary}>
+                      <div class="agent-card-copy run-output">{selectedRun()!.outputSummary}</div>
+                    </Show>
+                    <Show when={selectedRun()!.error}>
+                      <div class="agent-error">{selectedRun()!.error}</div>
+                    </Show>
+                    <div class="agent-section-title">Timeline</div>
+                    <For each={selectedRun()!.events}>
+                      {(event) => (
+                        <div class="run-event">
+                          <span>{event.kind}</span>
+                          <span>{event.summary}</span>
+                        </div>
+                      )}
+                    </For>
+                    <div class="agent-card-actions">
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() => void exportRun(selectedRun()!.id, "markdown")}
+                      >
+                        Export Markdown
+                      </button>
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() => void exportRun(selectedRun()!.id, "json")}
+                      >
+                        Export JSON
+                      </button>
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() => void deleteRun(selectedRun()!.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                }
+              >
+                <Show
+                  when={filteredRuns().length > 0}
+                  fallback={<div class="agent-muted">No runs match this filter.</div>}
+                >
+                  <For each={["Today", "Previous 7 days", "Older"] as const}>
+                    {(bucket) => (
+                      <Show
+                        when={filteredRuns().some((run) => runAgeBucket(run.createdAt) === bucket)}
+                      >
+                        <div class="agent-section-title">{bucket}</div>
+                        <For
+                          each={filteredRuns().filter(
+                            (run) => runAgeBucket(run.createdAt) === bucket,
+                          )}
+                        >
+                          {(run) => (
+                            <button
+                              class="run-row"
+                              type="button"
+                              onClick={() => void selectRun(run.id)}
+                            >
+                              <span class={`run-status run-status-${run.status}`} />
+                              <span class="run-row-copy">
+                                <strong>{run.title}</strong>
+                                <span>
+                                  {run.source} · {run.status}
+                                  {run.lastCompletedAction ? ` · ${run.lastCompletedAction}` : ""}
+                                </span>
+                              </span>
+                            </button>
+                          )}
+                        </For>
+                      </Show>
+                    )}
+                  </For>
+                </Show>
+              </Show>
+            </section>
+          </Show>
+
+          <Show when={sidebarTab() === "conversations"}>
+            <section class="agent-panel">
+              <div class="agent-panel-header">
+                <div>
+                  <div class="agent-panel-title">Conversation Library</div>
+                  <div class="agent-muted">Named threads persist securely across restarts.</div>
+                </div>
+              </div>
+              <div class="agent-card-actions conversation-create-row">
+                <input
+                  class="agent-steering-input"
+                  value={newThreadTitle()}
+                  placeholder="New thread title"
+                  onInput={(event) => setNewThreadTitle(event.currentTarget.value)}
+                />
+                <button
+                  class="agent-primary-button"
+                  type="button"
+                  disabled={!newThreadTitle().trim()}
+                  onClick={async () => {
+                    const thread = await createThread({
+                      title: newThreadTitle().trim(),
+                    });
+                    const chat = await createChat(thread.id);
+                    if (chat) {
+                      loadConversation(thread.id, chat.id, []);
+                      setSidebarTab("chat");
+                    }
+                    setNewThreadTitle("");
+                  }}
+                >
+                  New thread
+                </button>
+              </div>
+              <Show
+                when={!selectedThread()}
+                fallback={
+                  <div class="agent-card conversation-thread-detail">
+                    <button
+                      class="agent-control-button"
+                      type="button"
+                      onClick={clearThreadSelection}
+                    >
+                      Back to threads
+                    </button>
+                    <div class="agent-card-title">{selectedThread()!.title}</div>
+                    <input
+                      class="agent-steering-input"
+                      value={threadRename() || selectedThread()!.title}
+                      onInput={(event) => setThreadRename(event.currentTarget.value)}
+                    />
+                    <div class="agent-card-actions">
+                      <button
+                        class="agent-primary-button"
+                        type="button"
+                        onClick={async () => {
+                          const chat = await createChat(selectedThread()!.id);
+                          if (!chat) return;
+                          loadConversation(selectedThread()!.id, chat.id, []);
+                          setSidebarTab("chat");
+                        }}
+                      >
+                        New chat
+                      </button>
+                    </div>
+                    <Show
+                      when={selectedThread()!.chats.length > 0}
+                      fallback={<div class="agent-muted">No chats in this thread yet.</div>}
+                    >
+                      <For each={selectedThread()!.chats}>
+                        {(chat) => (
+                          <div class="conversation-chat-row">
+                            <Show
+                              when={editingChatId() === chat.id}
+                              fallback={
+                                <>
+                                  <button
+                                    class="conversation-chat-open"
+                                    type="button"
+                                    onClick={() => {
+                                      loadConversation(
+                                        selectedThread()!.id,
+                                        chat.id,
+                                        chat.messages.map(({ role, content }) => ({
+                                          role,
+                                          content,
+                                        })),
+                                      );
+                                      setSidebarTab("chat");
+                                    }}
+                                  >
+                                    <strong>{chat.title}</strong>
+                                    <span>
+                                      {chat.messageCount} messages ·{" "}
+                                      {new Date(chat.updatedAt).toLocaleString()}
+                                    </span>
+                                  </button>
+                                  <button
+                                    class="agent-control-button"
+                                    type="button"
+                                    onClick={() => {
+                                      setChatRenames((current) => ({
+                                        ...current,
+                                        [chat.id]: chat.title,
+                                      }));
+                                      setEditingChatId(chat.id);
+                                    }}
+                                  >
+                                    Rename
+                                  </button>
+                                </>
+                              }
+                            >
+                              <input
+                                class="agent-steering-input"
+                                value={chatRenames()[chat.id] ?? chat.title}
+                                aria-label={`Title for ${chat.title}`}
+                                onInput={(event) =>
+                                  setChatRenames((current) => ({
+                                    ...current,
+                                    [chat.id]: event.currentTarget.value,
+                                  }))
+                                }
+                              />
+                              <div class="conversation-chat-edit-actions">
+                                <button
+                                  class="agent-primary-button"
+                                  type="button"
+                                  onClick={async () => {
+                                    const title = chatRenames()[chat.id]?.trim() || chat.title;
+                                    await renameChat(selectedThread()!.id, chat.id, title);
+                                    setEditingChatId(null);
+                                  }}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  class="agent-control-button"
+                                  type="button"
+                                  onClick={() => {
+                                    setChatRenames((current) => {
+                                      const next = { ...current };
+                                      delete next[chat.id];
+                                      return next;
+                                    });
+                                    setEditingChatId(null);
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </Show>
+                          </div>
+                        )}
+                      </For>
+                    </Show>
+                    <div class="agent-card-actions conversation-thread-actions">
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() =>
+                          void renameThread(
+                            selectedThread()!.id,
+                            threadRename().trim() || selectedThread()!.title,
+                          )
+                        }
+                      >
+                        Rename thread
+                      </button>
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() => void archiveThread(selectedThread()!.id)}
+                      >
+                        Archive
+                      </button>
+                      <button
+                        class="agent-control-button"
+                        type="button"
+                        onClick={() => void deleteThread(selectedThread()!.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                }
+              >
+                <Show
+                  when={threads().length > 0}
+                  fallback={<div class="agent-muted">No saved threads yet.</div>}
+                >
+                  <For each={threads()}>
+                    {(thread) => (
+                      <button
+                        class="run-row conversation-row"
+                        type="button"
+                        onClick={async () => {
+                          const selected = await selectThread(thread.id);
+                          setThreadRename(selected?.title ?? "");
+                        }}
+                      >
+                        <span class="run-row-copy">
+                          <strong>{thread.title}</strong>
+                          <span>
+                            {thread.chatCount} chats · {thread.messageCount} messages ·{" "}
+                            {new Date(thread.updatedAt).toLocaleString()}
+                          </span>
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </Show>
+              </Show>
             </section>
           </Show>
 
@@ -1370,9 +1764,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                     class="bookmark-secondary-button"
                     type="button"
                     disabled={bookmarkExporting()}
-                    onClick={() =>
-                      void handleExportBookmarks("html-with-notes")
-                    }
+                    onClick={() => void handleExportBookmarks("html-with-notes")}
                   >
                     HTML + notes
                   </button>
@@ -1386,9 +1778,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   </button>
                 </div>
                 <Show when={bookmarkExportMessage()}>
-                  <div class="bookmark-export-message">
-                    {bookmarkExportMessage()}
-                  </div>
+                  <div class="bookmark-export-message">{bookmarkExportMessage()}</div>
                 </Show>
               </div>
 
@@ -1399,9 +1789,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   onClick={() => setBookmarkImportExpanded((current) => !current)}
                 >
                   <span class="bookmark-save-toggle-copy">
-                    <span class="bookmark-save-toggle-title">
-                      Import Bookmarks
-                    </span>
+                    <span class="bookmark-save-toggle-title">Import Bookmarks</span>
                     <span class="bookmark-save-toggle-subtitle">
                       Import from HTML or Vessel JSON
                     </span>
@@ -1435,9 +1823,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                       </button>
                     </div>
                     <Show when={bookmarkImportMessage()}>
-                      <div class="bookmark-export-message">
-                        {bookmarkImportMessage()}
-                      </div>
+                      <div class="bookmark-export-message">{bookmarkImportMessage()}</div>
                     </Show>
                   </div>
                 </Show>
@@ -1450,12 +1836,8 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   onClick={() => setBookmarkSaveExpanded((current) => !current)}
                 >
                   <span class="bookmark-save-toggle-copy">
-                    <span class="bookmark-save-toggle-title">
-                      Save Current Page
-                    </span>
-                    <span class="bookmark-save-toggle-subtitle">
-                      Manual bookmark save options
-                    </span>
+                    <span class="bookmark-save-toggle-title">Save Current Page</span>
+                    <span class="bookmark-save-toggle-subtitle">Manual bookmark save options</span>
                   </span>
                   <span
                     class="bookmark-save-toggle-caret"
@@ -1501,35 +1883,27 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                     <textarea
                       class="bookmark-note-input"
                       value={bookmarkIntent()}
-                      onInput={(e) =>
-                        setBookmarkIntent(e.currentTarget.value)
-                      }
+                      onInput={(e) => setBookmarkIntent(e.currentTarget.value)}
                       placeholder="Intent: what is this page for?"
                       rows={1}
                     />
                     <textarea
                       class="bookmark-note-input"
                       value={bookmarkExpectedContent()}
-                      onInput={(e) =>
-                        setBookmarkExpectedContent(e.currentTarget.value)
-                      }
+                      onInput={(e) => setBookmarkExpectedContent(e.currentTarget.value)}
                       placeholder="Expected content: what should be here?"
                       rows={1}
                     />
                     <input
                       class="bookmark-input"
                       value={bookmarkKeyFields()}
-                      onInput={(e) =>
-                        setBookmarkKeyFields(e.currentTarget.value)
-                      }
+                      onInput={(e) => setBookmarkKeyFields(e.currentTarget.value)}
                       placeholder="Key fields (comma-separated)"
                     />
                     <textarea
                       class="bookmark-note-input"
                       value={bookmarkAgentHints()}
-                      onInput={(e) =>
-                        setBookmarkAgentHints(e.currentTarget.value)
-                      }
+                      onInput={(e) => setBookmarkAgentHints(e.currentTarget.value)}
                       placeholder="Agent hints (one key:value per line)"
                       rows={2}
                     />
@@ -1537,10 +1911,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 </Show>
               </div>
 
-              <form
-                class="bookmark-folder-create"
-                onSubmit={handleCreateFolder}
-              >
+              <form class="bookmark-folder-create" onSubmit={handleCreateFolder}>
                 <div class="bookmark-folder-form-fields">
                   <input
                     class="bookmark-input"
@@ -1601,16 +1972,10 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                               ▸
                             </span>
                             <div>
-                              <div class="bookmark-folder-name">
-                                {folder.name}
-                              </div>
-                              <div class="bookmark-folder-meta">
-                                {folder.items.length} saved
-                              </div>
+                              <div class="bookmark-folder-name">{folder.name}</div>
+                              <div class="bookmark-folder-meta">{folder.items.length} saved</div>
                               <Show when={folder.summary}>
-                                <div class="bookmark-folder-summary">
-                                  {folder.summary}
-                                </div>
+                                <div class="bookmark-folder-summary">{folder.summary}</div>
                               </Show>
                             </div>
                           </div>
@@ -1666,9 +2031,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                 <button
                                   class="bookmark-ghost-button"
                                   type="button"
-                                  onClick={() =>
-                                    void handleRemoveFolder(folder.id, false)
-                                  }
+                                  onClick={() => void handleRemoveFolder(folder.id, false)}
                                 >
                                   Keep bookmarks
                                 </button>
@@ -1676,13 +2039,9 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                               <button
                                 class="bookmark-ghost-button danger"
                                 type="button"
-                                onClick={() =>
-                                  void handleRemoveFolder(folder.id, true)
-                                }
+                                onClick={() => void handleRemoveFolder(folder.id, true)}
                               >
-                                {folder.items.length > 0
-                                  ? "Delete all"
-                                  : "Delete folder"}
+                                {folder.items.length > 0 ? "Delete all" : "Delete folder"}
                               </button>
                               <button
                                 class="bookmark-ghost-button"
@@ -1701,16 +2060,12 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                               <input
                                 class="bookmark-input"
                                 value={editingFolderName()}
-                                onInput={(e) =>
-                                  setEditingFolderName(e.currentTarget.value)
-                                }
+                                onInput={(e) => setEditingFolderName(e.currentTarget.value)}
                               />
                               <input
                                 class="bookmark-input"
                                 value={editingFolderSummary()}
-                                onInput={(e) =>
-                                  setEditingFolderSummary(e.currentTarget.value)
-                                }
+                                onInput={(e) => setEditingFolderSummary(e.currentTarget.value)}
                                 placeholder="Optional one-line summary"
                               />
                             </div>
@@ -1755,28 +2110,19 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                             <div class="bookmark-items">
                               <For each={folder.items}>
                                 {(bookmark) => (
-                                  <div
-                                    class="bookmark-item"
-                                    data-bookmark-id={bookmark.id}
-                                  >
+                                  <div class="bookmark-item" data-bookmark-id={bookmark.id}>
                                     <button
                                       class="bookmark-item-link"
                                       type="button"
-                                      onClick={() =>
-                                        void createTab(bookmark.url)
-                                      }
+                                      onClick={() => void createTab(bookmark.url)}
                                     >
                                       <span class="bookmark-item-title">
                                         {bookmark.title || bookmark.url}
                                       </span>
-                                      <span class="bookmark-item-url">
-                                        {bookmark.url}
-                                      </span>
+                                      <span class="bookmark-item-url">{bookmark.url}</span>
                                     </button>
                                     <Show when={bookmark.note}>
-                                      <div class="bookmark-item-note">
-                                        {bookmark.note}
-                                      </div>
+                                      <div class="bookmark-item-note">{bookmark.note}</div>
                                     </Show>
                                     <Show
                                       when={
@@ -1784,29 +2130,22 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                         bookmark.expectedContent ||
                                         (bookmark.keyFields?.length || 0) > 0 ||
                                         ((bookmark.agentHints &&
-                                          Object.keys(bookmark.agentHints)
-                                            .length) ||
+                                          Object.keys(bookmark.agentHints).length) ||
                                           0) > 0
                                       }
                                     >
                                       <div class="bookmark-item-note">
                                         <Show when={bookmark.intent}>
                                           <div>
-                                            <strong>Intent:</strong>{" "}
-                                            {bookmark.intent}
+                                            <strong>Intent:</strong> {bookmark.intent}
                                           </div>
                                         </Show>
                                         <Show when={bookmark.expectedContent}>
                                           <div>
-                                            <strong>Expected:</strong>{" "}
-                                            {bookmark.expectedContent}
+                                            <strong>Expected:</strong> {bookmark.expectedContent}
                                           </div>
                                         </Show>
-                                        <Show
-                                          when={
-                                            (bookmark.keyFields?.length || 0) > 0
-                                          }
-                                        >
+                                        <Show when={(bookmark.keyFields?.length || 0) > 0}>
                                           <div>
                                             <strong>Key fields:</strong>{" "}
                                             {bookmark.keyFields?.join(", ")}
@@ -1815,19 +2154,13 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                         <Show
                                           when={
                                             bookmark.agentHints &&
-                                            Object.keys(bookmark.agentHints)
-                                              .length > 0
+                                            Object.keys(bookmark.agentHints).length > 0
                                           }
                                         >
                                           <div>
                                             <strong>Hints:</strong>{" "}
-                                            {Object.entries(
-                                              bookmark.agentHints || {},
-                                            )
-                                              .map(
-                                                ([key, hint]) =>
-                                                  `${key}: ${hint}`,
-                                              )
+                                            {Object.entries(bookmark.agentHints || {})
+                                              .map(([key, hint]) => `${key}: ${hint}`)
                                               .join(" • ")}
                                           </div>
                                         </Show>
@@ -1839,9 +2172,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           class="bookmark-input"
                                           value={editingBookmarkTitle()}
                                           onInput={(e) =>
-                                            setEditingBookmarkTitle(
-                                              e.currentTarget.value,
-                                            )
+                                            setEditingBookmarkTitle(e.currentTarget.value)
                                           }
                                           placeholder="Bookmark title"
                                         />
@@ -1850,9 +2181,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           rows={2}
                                           value={editingBookmarkNote()}
                                           onInput={(e) =>
-                                            setEditingBookmarkNote(
-                                              e.currentTarget.value,
-                                            )
+                                            setEditingBookmarkNote(e.currentTarget.value)
                                           }
                                           placeholder="Why this bookmark matters"
                                         />
@@ -1861,9 +2190,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           rows={1}
                                           value={editingBookmarkIntent()}
                                           onInput={(e) =>
-                                            setEditingBookmarkIntent(
-                                              e.currentTarget.value,
-                                            )
+                                            setEditingBookmarkIntent(e.currentTarget.value)
                                           }
                                           placeholder="Intent"
                                         />
@@ -1872,9 +2199,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           rows={1}
                                           value={editingBookmarkExpectedContent()}
                                           onInput={(e) =>
-                                            setEditingBookmarkExpectedContent(
-                                              e.currentTarget.value,
-                                            )
+                                            setEditingBookmarkExpectedContent(e.currentTarget.value)
                                           }
                                           placeholder="Expected content"
                                         />
@@ -1882,9 +2207,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           class="bookmark-input"
                                           value={editingBookmarkKeyFields()}
                                           onInput={(e) =>
-                                            setEditingBookmarkKeyFields(
-                                              e.currentTarget.value,
-                                            )
+                                            setEditingBookmarkKeyFields(e.currentTarget.value)
                                           }
                                           placeholder="Key fields (comma-separated)"
                                         />
@@ -1893,9 +2216,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           rows={2}
                                           value={editingBookmarkAgentHints()}
                                           onInput={(e) =>
-                                            setEditingBookmarkAgentHints(
-                                              e.currentTarget.value,
-                                            )
+                                            setEditingBookmarkAgentHints(e.currentTarget.value)
                                           }
                                           placeholder="Agent hints (one key:value per line)"
                                         />
@@ -1903,11 +2224,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                           <button
                                             class="bookmark-secondary-button"
                                             type="button"
-                                            onClick={() =>
-                                              void handleUpdateBookmark(
-                                                bookmark.id,
-                                              )
-                                            }
+                                            onClick={() => void handleUpdateBookmark(bookmark.id)}
                                           >
                                             Save edits
                                           </button>
@@ -1934,9 +2251,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                                             : startEditingBookmark(bookmark)
                                         }
                                       >
-                                        {editingBookmarkId() === bookmark.id
-                                          ? "Close"
-                                          : "Edit"}
+                                        {editingBookmarkId() === bookmark.id ? "Close" : "Edit"}
                                       </button>
                                       <button
                                         class="bookmark-ghost-button danger"
@@ -1998,10 +2313,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                     type="button"
                     onClick={async () => {
                       const name = checkpointName().trim();
-                      await createCheckpoint(
-                        name || undefined,
-                        checkpointNote() || undefined,
-                      );
+                      await createCheckpoint(name || undefined, checkpointNote() || undefined);
                       setCheckpointName("");
                       setCheckpointNote("");
                     }}
@@ -2029,9 +2341,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                             </Show>
                           </div>
                           <div class="checkpoint-timeline-content">
-                            <div class="checkpoint-timeline-name">
-                              {checkpoint.name}
-                            </div>
+                            <div class="checkpoint-timeline-name">{checkpoint.name}</div>
                             <div class="checkpoint-timeline-time">
                               {new Date(checkpoint.createdAt).toLocaleString()}
                             </div>
@@ -2041,18 +2351,13 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                               placeholder="Add a note..."
                               value={checkpoint.note || ""}
                               onBlur={(e) =>
-                                void updateCheckpointNote(
-                                  checkpoint.id,
-                                  e.currentTarget.value,
-                                )
+                                void updateCheckpointNote(checkpoint.id, e.currentTarget.value)
                               }
                             />
                             <button
                               class="agent-control-button"
                               type="button"
-                              onClick={() =>
-                                void restoreCheckpoint(checkpoint.id)
-                              }
+                              onClick={() => void restoreCheckpoint(checkpoint.id)}
                             >
                               Restore
                             </button>
@@ -2119,10 +2424,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
               <div class="history-list">
                 <For each={history.historyState().entries}>
                   {(entry) => (
-                    <button
-                      class="history-entry"
-                      onClick={() => createTab(entry.url)}
-                    >
+                    <button class="history-entry" onClick={() => createTab(entry.url)}>
                       <span class="history-entry-title">{entry.title || entry.url}</span>
                       <span class="history-entry-url">{entry.url}</span>
                       <span class="history-entry-time">
@@ -2132,14 +2434,10 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   )}
                 </For>
                 <Show when={history.hasMore()}>
-                  <button
-                    class="history-entry"
-                    onClick={() => void history.loadMore()}
-                  >
+                  <button class="history-entry" onClick={() => void history.loadMore()}>
                     <span class="history-entry-title">Load more history</span>
                     <span class="history-entry-url">
-                      Showing {history.historyState().entries.length} of{" "}
-                      {history.historyTotal()}
+                      Showing {history.historyState().entries.length} of {history.historyTotal()}
                     </span>
                   </button>
                 </Show>
@@ -2155,9 +2453,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
               <div class="agent-panel-header">
                 <div class="agent-panel-title">What Changed</div>
                 <div class="agent-panel-subtitle">
-                  {isPremium()
-                    ? "Page change timeline"
-                    : "Premium feature"}
+                  {isPremium() ? "Page change timeline" : "Premium feature"}
                 </div>
               </div>
               <Show
@@ -2166,8 +2462,8 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   <div class="kit-upsell premium-chat-banner">
                     <p class="kit-upsell-title">Vessel Premium</p>
                     <p class="kit-upsell-body premium-chat-banner-body">
-                      The Diff timeline is a premium feature. Upgrade to see a
-                      full history of what changed on this page.
+                      The Diff timeline is a premium feature. Upgrade to see a full history of what
+                      changed on this page.
                     </p>
                     <div class="premium-inline-actions premium-chat-banner-actions">
                       <button
@@ -2204,9 +2500,9 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
               <div class="kit-upsell premium-chat-banner">
                 <p class="kit-upsell-title">Vessel Premium</p>
                 <p class="kit-upsell-body premium-chat-banner-body">
-                  Give the built-in agent a bigger toolbox and longer runway:
-                  screenshots, saved sessions, workflow tracking, table
-                  extraction, and up to 1,000 tool calls per turn.
+                  Give the built-in agent a bigger toolbox and longer runway: screenshots, saved
+                  sessions, workflow tracking, table extraction, and up to 1,000 tool calls per
+                  turn.
                 </p>
                 <div class="premium-inline-actions premium-chat-banner-actions">
                   <button
@@ -2230,13 +2526,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
               {(msg) => (
                 <div class={`message message-${msg.role}`}>
                   <MarkdownMessage content={msg.content} />
-                  <Show
-                    when={
-                      msg.role === "assistant"
-                        ? getPremiumPromptKind(msg.content)
-                        : null
-                    }
-                  >
+                  <Show when={msg.role === "assistant" ? getPremiumPromptKind(msg.content) : null}>
                     {(kind) => (
                       <PremiumPromptCard
                         kind={kind()}
@@ -2310,12 +2600,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 {(approval) => (
                   <div class="chat-approval">
                     <div class="chat-approval-icon" aria-hidden="true">
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                      >
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <path
                           d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM7.25 4.75a.75.75 0 011.5 0v3.5a.75.75 0 01-1.5 0v-3.5zM8 11.5a.75.75 0 110-1.5.75.75 0 010 1.5z"
                           fill="currentColor"
@@ -2326,30 +2611,80 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                       <div class="chat-approval-title">
                         Approval needed: <strong>{approval.name}</strong>
                       </div>
-                      <Show when={approval.argsSummary}>
-                        <div class="chat-approval-detail">
-                          {approval.argsSummary}
-                        </div>
-                      </Show>
                       <div class="chat-approval-detail">{approval.reason}</div>
+                      <div class="chat-approval-detail">
+                        {JSON.stringify(approval.redactedArgs)}
+                      </div>
+                      <Show when={approval.domain}>
+                        <div class="chat-approval-detail">Domain: {approval.domain}</div>
+                      </Show>
+                      <div class="chat-approval-detail">
+                        {approval.undoable ? "Undo available" : "This action is not undoable"}
+                      </div>
                       <div class="chat-approval-actions">
                         <button
                           class="chat-approval-btn chat-approval-approve"
                           type="button"
                           onClick={() =>
-                            void resolveApproval(approval.id, true)
+                            void resolveApproval(approval.id, { decision: "approve-once" })
                           }
                         >
-                          Approve
+                          Approve once
                         </button>
+                        <Show when={approval.runId}>
+                          <button
+                            class="chat-approval-btn"
+                            type="button"
+                            onClick={() =>
+                              void resolveApproval(approval.id, { decision: "approve-run" })
+                            }
+                          >
+                            Approve run
+                          </button>
+                        </Show>
+                        <Show when={approval.domain}>
+                          <button
+                            class="chat-approval-btn"
+                            type="button"
+                            onClick={() =>
+                              void resolveApproval(approval.id, { decision: "approve-domain" })
+                            }
+                          >
+                            Approve domain
+                          </button>
+                        </Show>
                         <button
                           class="chat-approval-btn chat-approval-reject"
                           type="button"
-                          onClick={() =>
-                            void resolveApproval(approval.id, false)
-                          }
+                          onClick={() => void resolveApproval(approval.id, { decision: "reject" })}
                         >
                           Reject
+                        </button>
+                      </div>
+                      <div class="chat-approval-actions">
+                        <input
+                          class="chat-approval-steering"
+                          value={approvalSteering()[approval.id] ?? ""}
+                          placeholder="Tell the agent what to do instead"
+                          onInput={(event) =>
+                            setApprovalSteering((current) => ({
+                              ...current,
+                              [approval.id]: event.currentTarget.value,
+                            }))
+                          }
+                        />
+                        <button
+                          class="chat-approval-btn chat-approval-reject"
+                          type="button"
+                          disabled={!approvalSteering()[approval.id]?.trim()}
+                          onClick={() =>
+                            void resolveApproval(approval.id, {
+                              decision: "reject-steer",
+                              steering: approvalSteering()[approval.id]!.trim(),
+                            })
+                          }
+                        >
+                          Reject and steer
                         </button>
                       </div>
                     </div>
@@ -2671,8 +3006,8 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 </svg>
                 <p class="sidebar-empty-title">Your move.</p>
                 <p class="sidebar-empty-hint">
-                  Configure a provider in Settings (Ctrl+,) then ask anything
-                  about the current page or beyond.
+                  Configure a provider in Settings (Ctrl+,) then ask anything about the current page
+                  or beyond.
                 </p>
               </div>
             </Show>
@@ -2685,43 +3020,16 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
           <Show when={isStreaming() || messages().length > 0}>
             <div class="chat-actions">
               <Show when={isStreaming()}>
-                <button
-                  class="chat-action-btn"
-                  onClick={() => cancel()}
-                  title="Stop generating"
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    aria-hidden="true"
-                  >
-                    <rect
-                      x="2"
-                      y="2"
-                      width="10"
-                      height="10"
-                      rx="1.5"
-                      fill="currentColor"
-                    />
+                <button class="chat-action-btn" onClick={() => cancel()} title="Stop generating">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                    <rect x="2" y="2" width="10" height="10" rx="1.5" fill="currentColor" />
                   </svg>
                   Stop
                 </button>
               </Show>
               <Show when={!isStreaming() && messages().length > 0}>
-                <button
-                  class="chat-action-btn"
-                  onClick={handleRetry}
-                  title="Retry last prompt"
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    aria-hidden="true"
-                  >
+                <button class="chat-action-btn" onClick={handleRetry} title="Retry last prompt">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                     <path
                       d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"
                       stroke="currentColor"
@@ -2750,13 +3058,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 onClick={() => void scrollToHighlight(highlightIndex() - 1)}
                 title="Previous highlight"
               >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 12 12"
-                  fill="none"
-                  aria-hidden="true"
-                >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                   <path
                     d="M8 10L4 6l4-4"
                     stroke="currentColor"
@@ -2769,20 +3071,10 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
               <button
                 class="highlight-nav-label"
                 type="button"
-                onClick={() =>
-                  void scrollToHighlight(
-                    highlightIndex() < 0 ? 0 : highlightIndex(),
-                  )
-                }
+                onClick={() => void scrollToHighlight(highlightIndex() < 0 ? 0 : highlightIndex())}
                 title="Go to current highlight"
               >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 12 12"
-                  fill="none"
-                  aria-hidden="true"
-                >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                   <circle
                     cx="6"
                     cy="6"
@@ -2801,19 +3093,11 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 type="button"
                 disabled={highlightIndex() >= highlightCount() - 1}
                 onClick={() =>
-                  void scrollToHighlight(
-                    highlightIndex() < 0 ? 0 : highlightIndex() + 1,
-                  )
+                  void scrollToHighlight(highlightIndex() < 0 ? 0 : highlightIndex() + 1)
                 }
                 title="Next highlight"
               >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 12 12"
-                  fill="none"
-                  aria-hidden="true"
-                >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                   <path
                     d="M4 2l4 4-4 4"
                     stroke="currentColor"
@@ -2828,7 +3112,9 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
           <Show when={queueNotice() !== null || pendingQueryCount() > 0}>
             <div class="chat-queue-status">
               <div class="chat-queue-status-row">
-                <span>{queueNotice() ?? `Queued ${pendingQueryCount()}/${pendingQueryLimit}.`}</span>
+                <span>
+                  {queueNotice() ?? `Queued ${pendingQueryCount()}/${pendingQueryLimit}.`}
+                </span>
                 <Show when={pendingQueryCount() > 0}>
                   <button
                     class="chat-queue-clear"
@@ -2897,9 +3183,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                     </span>
                     <span class="chat-skill-suggestion-body">
                       <span class="chat-skill-suggestion-name">{kit.name}</span>
-                      <span class="chat-skill-suggestion-desc">
-                        {kit.description}
-                      </span>
+                      <span class="chat-skill-suggestion-desc">{kit.description}</span>
                     </span>
                   </button>
                 )}
@@ -2917,9 +3201,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                 {(parts) => (
                   <div class="sidebar-input-highlight" aria-hidden="true">
                     {parts().leading}
-                    <span class="sidebar-input-highlight-command">
-                      {parts().command}
-                    </span>
+                    <span class="sidebar-input-highlight-command">{parts().command}</span>
                     {parts().rest || "\u00a0"}
                   </div>
                 )}
@@ -2930,7 +3212,11 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
                   "skill-command-registered": recognizedSkillInputParts() !== null,
                 }}
                 rows={2}
-                placeholder={isStreaming() ? "Send now to queue the next prompt..." : "Ask anything or run /skill-id..."}
+                placeholder={
+                  isStreaming()
+                    ? "Send now to queue the next prompt..."
+                    : "Ask anything or run /skill-id..."
+                }
                 ref={chatInputRef}
                 value={chatInput()}
                 onInput={(e) => {

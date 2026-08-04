@@ -6,6 +6,7 @@ import { setSetting } from "../config/settings";
 import { onRuntimeHealthChange } from "../health/runtime-health";
 import { assertTrustedIpcSender, parseIpc, sendSafe, type SendToRendererViews } from "./common";
 import type { ApprovalMode, AgentRuntimeState, SessionSnapshot } from "../../shared/types";
+import type { ApprovalResolution } from "../../shared/policy-types";
 import type { AgentRuntime } from "../agent/runtime";
 
 const ApprovalModeSchema = z.enum(["auto", "confirm-dangerous", "manual"]);
@@ -13,7 +14,20 @@ const CheckpointIdSchema = z.string().min(1);
 const ApprovalIdSchema = z.string().min(1);
 const OptionalCheckpointNameSchema = z.string().trim().max(200).optional();
 const OptionalNoteSchema = z.string().trim().max(20_000).optional();
-const BooleanSchema = z.boolean();
+const ApprovalResolutionSchema = z
+  .object({
+    decision: z.enum(["approve-once", "approve-run", "approve-domain", "reject", "reject-steer"]),
+    steering: z.string().trim().min(1).max(20_000).optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.decision === "reject-steer" && !value.steering) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Steering guidance is required",
+        path: ["steering"],
+      });
+    }
+  });
 const TaskTextSchema = z.string().trim().min(1).max(20_000);
 const OptionalTaskTextSchema = z.string().trim().max(20_000).optional();
 const OptionalNullableTaskTextSchema = z.string().trim().max(20_000).nullable().optional();
@@ -92,11 +106,11 @@ export function registerAgentRuntimeHandlers(
 
   ipcMain.handle(
     Channels.AGENT_APPROVAL_RESOLVE,
-    (event, approvalId: unknown, approved: unknown): AgentRuntimeState => {
+    (event, approvalId: unknown, resolution: unknown): AgentRuntimeState => {
       assertTrustedIpcSender(event);
       return runtime.resolveApproval(
         parseIpc(ApprovalIdSchema, approvalId, "approvalId"),
-        parseIpc(BooleanSchema, approved, "approved"),
+        parseIpc(ApprovalResolutionSchema, resolution, "approval resolution") as ApprovalResolution,
       );
     },
   );

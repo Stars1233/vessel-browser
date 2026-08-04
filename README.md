@@ -8,6 +8,7 @@
   <a href="https://www.producthunt.com/products/quanta-intellect?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-vessel-browser-from-quanta-intellect" target="_blank" rel="noopener noreferrer"><img alt="Vessel Browser from Quanta Intellect - The browser where agents drive and humans supervise | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1107491&amp;theme=dark&amp;t=1774779141692"></a>
 
 # Vessel: Your AI-Powered Browser
+
 </div>
 
 Vessel is a simple, clean web browser with an AI assistant built in. Browse the web normally, then ask Vessel to help research, navigate pages, summarize what you are reading, fill forms, or keep track of longer tasks.
@@ -15,13 +16,13 @@ Vessel is a simple, clean web browser with an AI assistant built in. Browse the 
 Unlike invisible browser automation, Vessel shows you what the AI is doing in a real browser window. You can follow along, approve important actions, pause or redirect the work, and take over whenever you want.
 
 - **A familiar browser, with AI help nearby** — tabs, bookmarks, reader mode, downloads, and a sidebar assistant for web tasks
-- **Great for longer browsing sessions** — save named sessions, checkpoints, notes, bookmarks, and page changes so you can pick up where you left off
-- **You stay in control** — review what the AI is doing, approve sensitive actions, undo recent changes, and switch back to manual browsing at any time
+- **Great for longer browsing sessions** — durable conversation threads, a cross-source run inbox, named sessions, checkpoints, notes, bookmarks, and page changes make interrupted work recoverable
+- **You stay in control** — review what the AI is doing, approve sensitive actions once or for a scoped run/domain, reject with steering, undo recent changes, and switch back to manual browsing at any time
 - **Open source and extensible** — built on Chromium, with advanced automation support for MCP clients and agent tools when you need it
 
 Linux is the most mature install target today. macOS release packaging is available from source.
 
-*Vessel is in active development. Treat it as early software, especially for sensitive browsing or account access.*
+_Vessel is in active development. Treat it as early software, especially for sensitive browsing or account access._
 
 https://github.com/user-attachments/assets/0a72b48a-873a-4eb0-b8f2-23e34d8472c4
 
@@ -88,13 +89,16 @@ For power users and developers, the same foundation also supports external agent
 - **AI-assisted browsing** — ask Vessel to help with research, page reading, navigation, form work, and multi-step web tasks
 - **Human-visible browser UI** — pages render like a normal browser so AI activity stays legible instead of disappearing into a hidden run
 - **Command Bar** (`Ctrl+L`) — a secondary operator surface for harness-driven workflows and future runtime commands
-- **Supervisor Sidebar** (`Ctrl+Shift+L`) — live supervision across eight tabs: Supervisor, Bookmarks, Checkpoints, Chat, Skills, History, Changes, and Research
+- **Supervisor Sidebar** (`Ctrl+Shift+L`) — live supervision across ten tabs, including a durable Run Inbox, conversation Threads, approvals, checkpoints, changes, and Research
 - **Chat Assistant** — built-in conversational AI in the sidebar Chat tab; supports Anthropic, OpenAI, Ollama, llama.cpp, Mistral, xAI, Google Gemini, OpenRouter, and any OpenAI-compatible endpoint; reads the current page automatically; has full access to the same browser tools as external agents; multi-turn session history; configure provider, model, and API key in Settings
 - **Skills** (Premium) — reusable browser skills in the sidebar Skills tab; import, view, run, or delete skills the built-in agent can use for research, shopping, and site-specific workflows
 - **Research Desk** (Beta) — a dedicated sidebar Research tab for structured research reports; start with a topic, complete an in-tab briefing, let Vessel draft research objectives, approve the plan, then dispatch browser sub-agents to collect source-backed claims and synthesize a markdown-exportable report. Starting the brief is free; plan approval, sub-agent execution, and report export require Vessel Premium.
 - **Dev Tools Panel** (`F12`) — inspect console output, network requests, and MCP/agent activity in a resizable panel at the bottom of the window; export logs by category and date range as JSON
 - **Browser Basics For Long Runs** — pinned tabs stay compact at the front of the tab strip and are protected from accidental close; tab groups can be color-coded and collapsed; audible tabs show audio indicators with mute controls; open additional browser windows with `Ctrl+N`; print the active page with `Ctrl+P` or save it directly as PDF with `Ctrl+Shift+P`
 - **Action Undo / Rollback** — restore the browser to the session snapshot captured immediately before the last successful mutating agent action; available from the Supervisor tab and through the `undo_last_action` tool
+- **Durable Run Inbox** — Chat, MCP, scheduled, and Research work share one persisted lifecycle with status filters, parent/child research runs, redacted inputs, outputs, errors, and tab context
+- **Persistent Conversation Threads** — group multiple independent chats inside named threads; each chat gets an AI-generated title after its first completed exchange and can be reopened or retitled, while threads can be renamed, archived, or deleted; archived threads follow the configured history period
+- **Scoped Approval Policies** — approve once, approve for a run, approve for a domain, or reject and steer; explicit denies take precedence and expired scoped rules are ignored
 - **Agent-Meaningful Bookmarks** — bookmarks carry structured context the agent can read and act on: `intent` (what the page is for), `expectedContent` (what to expect on the page), `keyFields` (important form fields), `agentHints` (arbitrary directives), and a stored `pageSchema`; humans can create and edit this metadata directly in the Bookmarks tab, and all fields are searchable
 - **Portable Bookmark Export** — export browser-compatible Netscape HTML for import into Chrome, Firefox, Safari, Edge, Brave, and other browsers; optionally include Vessel notes/agent metadata, or export a full-fidelity Vessel JSON archive
 - **Page Schema Inference** — Vessel automatically infers a typed schema for every page: `pageType` (article, product, form, search, checkout, login, dashboard), `primaryEntity` (structured fields for products and articles), `formFields` (with names, types, labels, selectors), and `actionButtons` (with inferred intents: submit, addToCart, login, etc.); schema is attached to every content extraction result
@@ -120,6 +124,18 @@ For power users and developers, the same foundation also supports external agent
 - **Resizable Panels** — drag the sidebar edge to resize; width persists across sessions
 - **Minimal Dark Theme** — warm dark grays, restrained accent color, and no pure black/white
 
+### Reliability, History, and Approvals
+
+The Supervisor sidebar now keeps longer-running work understandable across Chat, external MCP agents, scheduled jobs, and Research:
+
+- Open **Runs** to filter work that needs attention, is active, failed, completed, or comes from any source. Each run has a chronological timeline with status changes, approvals, outputs, errors, and relevant tab context; records can be exported as Markdown or JSON or deleted from Vessel.
+- Open **Threads** to organize multiple chats under a named topic. Chats can be reopened or retitled independently, while their parent thread can be renamed, archived, or deleted. New chats receive a generated title after their first completed exchange.
+- Approval cards show the action, redacted arguments, domain, and whether undo is available. You can approve once, approve matching work for the current run or domain, reject, or reject with written steering. Persisted scoped rules remain visible in Supervisor and can be removed there.
+- If Vessel closes while a run is active or waiting for approval, that run is marked **interrupted** on the next launch instead of being left misleadingly active. Vessel does not claim to resume or retry the unfinished execution automatically.
+- Terminal run history and archived threads follow `historyRetentionDays` (`90` days by default; supported values are `7`, `30`, `90`, `180`, `365`, or `null` for no automatic expiry). Active runs and unarchived threads are preserved.
+
+Conversation history is encrypted through Electron's `safeStorage` API when encryption is available. If secure storage is unavailable, Vessel keeps conversations in memory for that session instead of writing plaintext chat history. Run records redact sensitive argument fields and limit stored output size before persistence or export.
+
 ## Positioning
 
 Most browsers treat automation as secondary and assume a human is the primary actor. Vessel is the opposite: it is the browser for the agent, with a visible interface that keeps the human in the loop.
@@ -133,26 +149,26 @@ That means the product should optimize for:
 
 ## Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Engine | Chromium (Electron 40) |
-| UI Framework | SolidJS |
-| Language | TypeScript |
-| Build | electron-vite + Vite |
-| AI Control | External agent harnesses (Hermes Agent, OpenClaw, MCP clients) + built-in chat (Anthropic, OpenAI, Ollama, llama.cpp, and any OAI-compatible endpoint) |
-| Content Extraction | @mozilla/readability |
+| Layer              | Technology                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Engine             | Chromium (Electron 40)                                                                                                                                 |
+| UI Framework       | SolidJS                                                                                                                                                |
+| Language           | TypeScript                                                                                                                                             |
+| Build              | electron-vite + Vite                                                                                                                                   |
+| AI Control         | External agent harnesses (Hermes Agent, OpenClaw, MCP clients) + built-in chat (Anthropic, OpenAI, Ollama, llama.cpp, and any OAI-compatible endpoint) |
+| Content Extraction | @mozilla/readability                                                                                                                                   |
 
 ## Architecture
 
 ```
-Main Process                              Renderer (SolidJS)
-├── TabManager (WebContentsView[])        ├── TabBar, AddressBar
-├── AgentRuntime (session + supervision)  ├── CommandBar (secondary surface)
-├── MCP server for external agents        ├── AI Sidebar (Supervisor/Bookmarks/Checkpoints/Chat/Automate/History/Changes/Research)
-├── AI providers (Anthropic + OAI-compat) ├── DevTools Panel (Console/Network/Activity)
-├── Supervision, bookmarks, checkpoints   ├── Agent Transcript Dock
-└── IPC Handlers ◄──contextBridge──► ──► └── Signal stores (tabs, ai, ui)
-└── IPC Handlers ◄──contextBridge──► Preload API
+Main Process                                  Renderer (SolidJS)
+├── TabManager (WebContentsView[])            ├── TabBar, AddressBar
+├── AgentRuntime (session + supervision)      ├── CommandBar (secondary surface)
+├── Run, conversation, and policy managers    ├── AI Sidebar (Supervisor/Runs/Threads/Chat/...)
+├── MCP server for external agents            ├── DevTools Panel (Console/Network/Activity)
+├── AI providers (Anthropic + OAI-compatible) ├── Agent Transcript Dock
+├── Bookmarks, checkpoints, and page history  └── Signal stores (runtime/runs/conversations/policies/...)
+└── IPC handlers ◄──contextBridge──► Preload API
 ```
 
 Each browser tab is a separate `WebContentsView` managed by the main process. The browser chrome (SolidJS) runs in its own view layered on top. All communication between renderer and main goes through typed IPC channels via `contextBridge`.
@@ -257,7 +273,8 @@ Vessel is designed to act as the browser runtime that your external agent harnes
 3. Optional: set an Obsidian vault path, create autofill profiles, or adjust session preferences
 4. Start Hermes Agent or OpenClaw and point it at Vessel — the easiest way is `vessel-browser-mcp --stdio` as the MCP command (auth is resolved automatically), or connect directly to `http://127.0.0.1:<mcpPort>/mcp` with the bearer token from `~/.config/vessel/mcp-auth.json`
 5. Use the Supervisor panel in Vessel's sidebar to pause the agent, change approval mode, review pending approvals, checkpoint, undo the last mutating action, or restore the browser session while the harness runs
-6. Use the Bookmarks panel to organize saved pages into folders, edit agent-facing bookmark metadata, export bookmarks for other browsers, and expose saved pages back to the agent over MCP
+6. Open Runs to inspect or export activity from Chat, MCP, scheduled jobs, and Research; use Threads to reopen and organize durable conversations
+7. Use the Bookmarks panel to organize saved pages into folders, edit agent-facing bookmark metadata, export bookmarks for other browsers, and expose saved pages back to the agent over MCP
 
 Notes:
 
@@ -503,24 +520,24 @@ vessel-browser-launch --dry-run
 
 ## Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+L` | AI Command Bar |
-| `Ctrl+Shift+L` | Toggle AI Sidebar |
-| `Ctrl+Shift+F` | Toggle Focus Mode |
-| `F12` | Toggle Dev Tools Panel |
-| `Ctrl+N` | New Window |
-| `Ctrl+T` | New Tab |
-| `Ctrl+W` | Close Tab |
-| `Ctrl+Shift+T` | Reopen Closed Tab |
-| `Ctrl+Shift+N` | New Private Window |
-| `Ctrl+F` | Find in Page |
-| `Ctrl++` / `Ctrl+=` | Zoom In |
-| `Ctrl+-` | Zoom Out |
-| `Ctrl+0` | Reset Zoom |
-| `Ctrl+P` | Print Active Page |
-| `Ctrl+Shift+P` | Save Active Page as PDF |
-| `Ctrl+,` | Settings |
+| Shortcut            | Action                  |
+| ------------------- | ----------------------- |
+| `Ctrl+L`            | AI Command Bar          |
+| `Ctrl+Shift+L`      | Toggle AI Sidebar       |
+| `Ctrl+Shift+F`      | Toggle Focus Mode       |
+| `F12`               | Toggle Dev Tools Panel  |
+| `Ctrl+N`            | New Window              |
+| `Ctrl+T`            | New Tab                 |
+| `Ctrl+W`            | Close Tab               |
+| `Ctrl+Shift+T`      | Reopen Closed Tab       |
+| `Ctrl+Shift+N`      | New Private Window      |
+| `Ctrl+F`            | Find in Page            |
+| `Ctrl++` / `Ctrl+=` | Zoom In                 |
+| `Ctrl+-`            | Zoom Out                |
+| `Ctrl+0`            | Reset Zoom              |
+| `Ctrl+P`            | Print Active Page       |
+| `Ctrl+Shift+P`      | Save Active Page as PDF |
+| `Ctrl+,`            | Settings                |
 
 ## Project Structure
 
@@ -530,6 +547,10 @@ src/
 │   ├── ai/               # Agent tools, query flow, and AI provider implementations
 │   ├── tabs/             # Tab + TabManager (WebContentsView)
 │   ├── agent/            # Agent runtime, checkpoints, supervision, flow tracking
+│   ├── conversations/    # Secure conversation thread and chat storage
+│   ├── runs/             # Durable cross-source run records, timelines, export redaction
+│   ├── policy/           # Action classification and scoped approval policies
+│   ├── persistence/      # Debounced JSON and secure-storage persistence helpers
 │   ├── content/          # Readability extraction, reader mode, screenshot, page snapshots/diff
 │   ├── config/           # Settings persistence
 │   ├── autofill/         # Autofill profile persistence and form-field matching
@@ -557,10 +578,10 @@ src/
 │   └── src/
 │       ├── components/
 │       │   ├── chrome/   # TitleBar, TabBar, AddressBar, AgentTranscriptDock
-│       │   ├── ai/       # CommandBar, Sidebar (Supervisor/Bookmarks/Checkpoints/Chat/Automate/History/Changes/Research)
+│       │   ├── ai/       # CommandBar, Sidebar (Supervisor/Runs/Threads/Bookmarks/Checkpoints/Chat/Skills/History/Changes/Research)
 │       │   ├── devtools/ # DevTools panel (Console, Network, Activity)
 │       │   └── shared/   # Settings panel
-│       ├── stores/       # SolidJS signal stores (tabs, ai, ui, runtime, bookmarks, etc.)
+│       ├── stores/       # SolidJS stores (runtime, runs, conversations, policies, tabs, AI, etc.)
 │       ├── styles/       # Theme, global CSS
 │       └── lib/          # Keybindings, markdown, skills registry
 └── shared/               # Types + IPC channel constants
@@ -579,4 +600,4 @@ src/
 
 MIT
 
-*Developed by Tyler Williams in Portland, Oregon (2026)*
+_Developed by Tyler Williams in Portland, Oregon (2026)_

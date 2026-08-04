@@ -112,5 +112,9 @@ export function getTotpSecret(id: string): string | null {
   return entry?.totpSecret ?? null;
 }
 
+export function hasTotpSecret(id: string): boolean {
+  return Boolean(loadVault().find((entry) => entry.id === id)?.totpSecret);
+}
+
 /** Generate a TOTP code from a base32 secret. */
 export { generateTotpCode };

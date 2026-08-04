@@ -2,20 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { app, ipcMain } from "electron";
 import { Channels } from "../../shared/channels";
-import type {
-  AutomationActivityEntry,
-  ScheduleConfig,
-  ScheduledJob,
-} from "../../shared/types";
+import type { AutomationActivityEntry, ScheduleConfig, ScheduledJob } from "../../shared/types";
+import type { RunManager } from "../runs/manager";
 import { loadSettings } from "../config/settings";
 import { createProvider } from "../ai/provider";
 import { handleAIQuery } from "../ai/commands";
-import {
-  endAIStream,
-  isAIStreamActive,
-  onAIStreamIdle,
-  tryBeginAIStream,
-} from "../ai/stream-lock";
+import { endAIStream, isAIStreamActive, onAIStreamIdle, tryBeginAIStream } from "../ai/stream-lock";
 import { createLogger } from "../../shared/logger";
 import type { WindowState } from "../window";
 import type { AgentRuntime } from "../agent/runtime";
@@ -155,9 +147,7 @@ export function isValidScheduleConfig(s: unknown): s is ScheduleConfig {
   return true;
 }
 
-function isValidJobData(
-  v: unknown,
-): v is Omit<ScheduledJob, "id" | "createdAt" | "nextRunAt"> {
+function isValidJobData(v: unknown): v is Omit<ScheduledJob, "id" | "createdAt" | "nextRunAt"> {
   if (!v || typeof v !== "object") return false;
   const j = v as Record<string, unknown>;
   return (
@@ -174,10 +164,7 @@ function isValidJobData(
   );
 }
 
-export function normalizeScheduledJob(
-  job: ScheduledJob,
-  now: Date = new Date(),
-): boolean {
+export function normalizeScheduledJob(job: ScheduledJob, now: Date = new Date()): boolean {
   return normalizeJob(job, now);
 }
 
@@ -185,18 +172,29 @@ async function fireJob(
   job: ScheduledJob,
   windowState: WindowState,
   runtime: AgentRuntime,
+  runManager: RunManager,
 ): Promise<void> {
   const { chromeView, sidebarView, devtoolsPanelView, tabManager } = windowState;
 
   const send = (channel: string, ...args: unknown[]) => {
-    if (!chromeView.webContents.isDestroyed())
-      chromeView.webContents.send(channel, ...args);
-    if (!sidebarView.webContents.isDestroyed())
-      sidebarView.webContents.send(channel, ...args);
+    if (!chromeView.webContents.isDestroyed()) chromeView.webContents.send(channel, ...args);
+    if (!sidebarView.webContents.isDestroyed()) sidebarView.webContents.send(channel, ...args);
     if (!devtoolsPanelView.webContents.isDestroyed())
       devtoolsPanelView.webContents.send(channel, ...args);
   };
 
+  const initialState = tabManager
+    .getAllStates()
+    .find((tab) => tab.id === tabManager.getActiveTabId());
+  const runRecord = runManager.startRun({
+    source: "scheduled",
+    title: job.kitName,
+    goal: job.renderedPrompt,
+    scheduledJobId: job.id,
+    initialTab: initialState
+      ? { tabId: initialState.id, title: initialState.title, url: initialState.url }
+      : null,
+  });
   const settings = loadSettings();
   const activityId = `scheduled:${job.id}:${Date.now()}`;
   const startActivity = () => {
@@ -213,6 +211,7 @@ async function fireJob(
   };
   const appendActivity = (chunk: string) => {
     send(Channels.AUTOMATION_ACTIVITY_CHUNK, { id: activityId, chunk });
+    runManager.appendOutput(runRecord.id, chunk);
   };
   const finishActivity = (status: "completed" | "failed") => {
     send(Channels.AUTOMATION_ACTIVITY_END, {
@@ -225,14 +224,16 @@ async function fireJob(
   startActivity();
   if (!settings.chatProvider) {
     logger.warn(`Job "${job.kitName}" skipped — no chat provider configured`);
-    appendActivity(
-      "Chat provider not configured. Open Settings (Ctrl+,) to choose a provider.",
-    );
+    appendActivity("Chat provider not configured. Open Settings (Ctrl+,) to choose a provider.");
     finishActivity("failed");
+    runManager.finishRun(runRecord.id, {
+      status: "failed",
+      error: "Chat provider not configured",
+    });
     return;
   }
 
-  if (process.env.VESSEL_DEBUG_SCHEDULER === '1' || process.env.VESSEL_DEBUG_SCHEDULER === 'true') {
+  if (process.env.VESSEL_DEBUG_SCHEDULER === "1" || process.env.VESSEL_DEBUG_SCHEDULER === "true") {
     logger.info(`Firing scheduled job: ${job.kitName} (${job.id})`);
   }
   try {
@@ -246,15 +247,31 @@ async function fireJob(
       () => finishActivity("completed"),
       tabManager,
       runtime,
+      undefined,
+      undefined,
+      runRecord.id,
     );
+    const finalState = tabManager
+      .getAllStates()
+      .find((tab) => tab.id === tabManager.getActiveTabId());
+    runManager.finishRun(runRecord.id, {
+      status: "completed",
+      finalTab: finalState
+        ? { tabId: finalState.id, title: finalState.title, url: finalState.url }
+        : null,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     appendActivity(`\n[Scheduled Skill Error: ${msg}]`);
     finishActivity("failed");
+    runManager.finishRun(runRecord.id, {
+      status: "failed",
+      error: msg,
+    });
   }
 }
 
-function tick(windowState: WindowState, runtime: AgentRuntime): void {
+function tick(windowState: WindowState, runtime: AgentRuntime, runManager: RunManager): void {
   if (isAIStreamActive()) return;
 
   const dueIds = jobs
@@ -269,7 +286,7 @@ function tick(windowState: WindowState, runtime: AgentRuntime): void {
   const fireNext = (): void => {
     if (idx >= dueIds.length) {
       endAIStream("scheduled");
-      queueMicrotask(() => tick(windowState, runtime));
+      queueMicrotask(() => tick(windowState, runtime, runManager));
       return;
     }
 
@@ -297,7 +314,7 @@ function tick(windowState: WindowState, runtime: AgentRuntime): void {
     saveJobs();
     broadcastFn?.(Channels.SCHEDULE_JOBS_UPDATE, jobs);
 
-    void fireJob(job, windowState, runtime)
+    void fireJob(job, windowState, runtime, runManager)
       .catch((err) => {
         logger.warn("Unexpected error firing job:", err);
       })
@@ -310,6 +327,7 @@ function tick(windowState: WindowState, runtime: AgentRuntime): void {
 export function registerScheduleHandlers(
   windowState: WindowState,
   runtime: AgentRuntime,
+  runManager: RunManager,
   sendToAll: (channel: string, ...args: unknown[]) => void,
 ): void {
   stopScheduler();
@@ -319,15 +337,15 @@ export function registerScheduleHandlers(
     saveJobs();
   }
 
-  removeIdleListener = onAIStreamIdle(() => tick(windowState, runtime));
+  removeIdleListener = onAIStreamIdle(() => tick(windowState, runtime, runManager));
 
   // Align the first tick to the top of the next minute so jobs fire at :00 seconds.
   const now = new Date();
   const msToNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
   alignStartTimeout = setTimeout(() => {
     alignStartTimeout = null;
-    tick(windowState, runtime);
-    pollInterval = setInterval(() => tick(windowState, runtime), 60_000);
+    tick(windowState, runtime, runManager);
+    pollInterval = setInterval(() => tick(windowState, runtime, runManager), 60_000);
   }, msToNextMinute);
 
   ipcMain.handle(Channels.SCHEDULE_GET_ALL, (event) => {
@@ -363,7 +381,9 @@ export function registerScheduleHandlers(
     const job = jobs.find((j) => j.id === id);
     if (!job) return null;
     if (updates && typeof updates === "object") {
-      const u = updates as Partial<Pick<ScheduledJob, "enabled" | "schedule" | "renderedPrompt" | "fieldValues">>;
+      const u = updates as Partial<
+        Pick<ScheduledJob, "enabled" | "schedule" | "renderedPrompt" | "fieldValues">
+      >;
       const wasEnabled = job.enabled;
       if (u.enabled !== undefined) job.enabled = u.enabled;
       if (u.schedule !== undefined && isValidScheduleConfig(u.schedule)) {

@@ -8,8 +8,48 @@ import { waitForLoad } from "../utils/webcontents-utils";
 import type { AgentRuntime } from "../agent/runtime";
 import type { TabManager } from "../tabs/tab-manager";
 import { waitForConditionDirect as waitForCondition } from "../ai/page-actions/interaction";
+import type { RunManager } from "../runs/manager";
 
 const logger = createLogger("MCP");
+const MCP_RUN_IDLE_MS = 5 * 60 * 1000;
+let mcpRunManager: RunManager | null = null;
+let activeMcpRunId: string | null = null;
+let activeMcpRunError: string | null = null;
+let mcpRunIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function configureMcpRunManager(manager: RunManager): void {
+  mcpRunManager = manager;
+}
+
+function closeActiveMcpRun(): void {
+  if (activeMcpRunId) {
+    mcpRunManager?.finishRun(activeMcpRunId, {
+      status: activeMcpRunError ? "failed" : "completed",
+      error: activeMcpRunError,
+    });
+    activeMcpRunId = null;
+    activeMcpRunError = null;
+  }
+  clearTimeout(mcpRunIdleTimer);
+  mcpRunIdleTimer = null;
+}
+
+function getActiveMcpRun(tabManager: TabManager): string | undefined {
+  if (!mcpRunManager) return undefined;
+  if (!activeMcpRunId) {
+    const active = getActiveTabSummary(tabManager);
+    activeMcpRunId = mcpRunManager.startRun({
+      source: "mcp",
+      title: "MCP activity",
+      goal: "External harness browser activity",
+      initialTab: active ? { tabId: active.tabId, title: active.title, url: active.url } : null,
+    }).id;
+    activeMcpRunError = null;
+  }
+  clearTimeout(mcpRunIdleTimer);
+  mcpRunIdleTimer = setTimeout(closeActiveMcpRun, MCP_RUN_IDLE_MS);
+  return activeMcpRunId;
+}
 
 export function asTextResponse(text: string) {
   return { content: [{ type: "text" as const, text }] };
@@ -73,10 +113,7 @@ export function getActiveTabSummary(tabManager: TabManager) {
   };
 }
 
-export async function getPostActionState(
-  tabManager: TabManager,
-  name: string,
-): Promise<string> {
+export async function getPostActionState(tabManager: TabManager, name: string): Promise<string> {
   // Append state context for navigation/interaction actions
   const tab = tabManager.getActiveTab();
   if (!tab) return "";
@@ -91,13 +128,7 @@ export async function getPostActionState(
     "reload",
     "press_key",
   ];
-  const interactActions = [
-    "type",
-    "type_text",
-    "select_option",
-    "hover",
-    "focus",
-  ];
+  const interactActions = ["type", "type_text", "select_option", "hover", "focus"];
   const tabActions = ["create_tab", "switch_tab", "close_tab"];
 
   if (navActions.includes(name)) {
@@ -109,14 +140,9 @@ export async function getPostActionState(
       if (issue) {
         const blockedUrl = wc.getURL();
         const canRecover =
-          [
-            "navigate",
-            "open_bookmark",
-            "click",
-            "submit_form",
-            "reload",
-            "press_key",
-          ].includes(name) && tab.canGoBack();
+          ["navigate", "open_bookmark", "click", "submit_form", "reload", "press_key"].includes(
+            name,
+          ) && tab.canGoBack();
 
         if (canRecover && tab.goBack()) {
           await waitForLoad(wc);
@@ -156,21 +182,34 @@ export async function withAction(
   const premiumGate = getPremiumToolGateResponse(name);
   if (premiumGate) return premiumGate;
 
+  const runId = getActiveMcpRun(tabManager);
   try {
     const result = await runtime.runControlledAction({
       source: "mcp",
       name,
       args,
       tabId: tabManager.getActiveTabId(),
+      runId,
+      url: tabManager.getActiveTab()?.view.webContents.getURL() ?? null,
       dangerous: isDangerousMcpAction(name),
       requiresApproval: requiresExplicitMcpApproval(name, args),
       executor,
     });
+    if (runId) mcpRunManager?.appendOutput(runId, result);
     const stateInfo = await getPostActionState(tabManager, name);
     const flowCtx = runtime.getFlowContext();
     return asTextResponse(result + stateInfo + flowCtx);
   } catch (error) {
-    return asErrorTextResponse(getErrorMessage(error));
+    const message = getErrorMessage(error);
+    if (runId && runId === activeMcpRunId) activeMcpRunError = message;
+    if (runId) {
+      mcpRunManager?.appendEvent(runId, {
+        kind: "action-failed",
+        summary: message,
+        actionName: name,
+      });
+    }
+    return asErrorTextResponse(message);
   }
 }
 
@@ -185,12 +224,7 @@ export async function waitForConditionMcp(
   const expectedSelector = (selector || "").trim();
   const startedAt = Date.now();
 
-  const result = await waitForCondition(
-    wc,
-    expectedText,
-    expectedSelector,
-    effectiveTimeout,
-  );
+  const result = await waitForCondition(wc, expectedText, expectedSelector, effectiveTimeout);
   const elapsedMs = Date.now() - startedAt;
 
   if (result === "Error: wait_for requires text or selector") {
@@ -251,7 +285,9 @@ export async function waitForConditionMcp(
   };
 
   if (expectedSelector) {
-  const diagnostic = await wc.executeJavaScript(`
+    const diagnostic = await wc
+      .executeJavaScript(
+        `
       (function() {
         try {
           var count = document.querySelectorAll(${JSON.stringify(expectedSelector)}).length;
@@ -260,10 +296,12 @@ export async function waitForConditionMcp(
           return 'selector error: ' + e.message;
         }
       })()
-    `).catch((err) => {
-      logger.warn("Failed to gather wait_for timeout diagnostic:", err);
-      return null;
-    });
+    `,
+      )
+      .catch((err) => {
+        logger.warn("Failed to gather wait_for timeout diagnostic:", err);
+        return null;
+      });
     if (typeof diagnostic === "string" && diagnostic.trim()) {
       timeoutPayload.diagnostic = diagnostic;
     }

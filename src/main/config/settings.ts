@@ -26,6 +26,7 @@ import {
   DETACHED_DEVTOOLS_MIN_WIDTH,
   sanitizeDevToolsDetachedBounds,
 } from "../../shared/devtools";
+import { normalizeHistoryRetentionDays } from "../../shared/run-types";
 
 const defaults: VesselSettings = {
   defaultUrl: "https://start.duckduckgo.com",
@@ -47,6 +48,7 @@ const defaults: VesselSettings = {
   downloadPath: "",
   telemetryEnabled: true,
   defaultSearchEngine: "duckduckgo",
+  historyRetentionDays: 90,
   premium: {
     status: "free",
     customerId: "",
@@ -62,9 +64,7 @@ const CHAT_PROVIDER_SECRET_FILENAME = "vessel-chat-provider-secret";
 const CODEX_TOKENS_FILENAME = "vessel-codex-tokens";
 const logger = createLogger("Settings");
 
-const INTERNAL_SETTING_KEYS: ReadonlySet<InternalSettingKey> = new Set([
-  "premium",
-]);
+const INTERNAL_SETTING_KEYS: ReadonlySet<InternalSettingKey> = new Set(["premium"]);
 
 /** Allowlist of setting keys accepted from renderer settings IPC. */
 export const RENDERER_SETTABLE_KEYS: ReadonlySet<RendererSettableSettingKey> = new Set(
@@ -142,6 +142,14 @@ const SettingsValueSchemas: Record<keyof VesselSettings, z.ZodType> = {
   }),
   telemetryEnabled: z.boolean(),
   defaultSearchEngine: z.enum(["duckduckgo", "google", "bing", "brave", "ecosia", "kagi", "none"]),
+  historyRetentionDays: z.union([
+    z.literal(7),
+    z.literal(30),
+    z.literal(90),
+    z.literal(180),
+    z.literal(365),
+    z.null(),
+  ]),
 };
 
 let settings: VesselSettings | null = null;
@@ -290,10 +298,7 @@ function mergeChatProviderSecret(
 
   const stored = readStoredProviderSecret();
   const legacyApiKey = provider.apiKey?.trim() || "";
-  const apiKey =
-    stored?.providerId === provider.id
-      ? stored.apiKey
-      : legacyApiKey;
+  const apiKey = stored?.providerId === provider.id ? stored.apiKey : legacyApiKey;
 
   if (legacyApiKey && stored?.providerId !== provider.id) {
     writeStoredProviderSecret({ providerId: provider.id, apiKey: legacyApiKey });
@@ -366,15 +371,11 @@ function sanitizeReasoningEffortLevel(value: unknown): ReasoningEffortLevel {
 
 function sanitizeStringList(value: unknown): string[] {
   return Array.isArray(value)
-    ? Array.from(
-        new Set(value.map((item) => String(item).trim()).filter(Boolean)),
-      )
+    ? Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean)))
     : [];
 }
 
-function sanitizeChatProvider(
-  provider: ProviderConfig | null,
-): ProviderConfig | null {
+function sanitizeChatProvider(provider: ProviderConfig | null): ProviderConfig | null {
   return provider
     ? {
         ...provider,
@@ -420,14 +421,10 @@ export function loadSettings(): VesselSettings {
     settings = {
       ...defaults,
       ...parsed,
-      chatProvider: sanitizeChatProvider(
-        mergeChatProviderSecret(parsed.chatProvider ?? null),
-      ),
+      chatProvider: sanitizeChatProvider(mergeChatProviderSecret(parsed.chatProvider ?? null)),
       mcpPort: sanitizePort(parsed.mcpPort ?? defaults.mcpPort),
       sidebarPanelMode: sanitizeSidebarPanelMode(parsed.sidebarPanelMode),
-      sidebarDetachedBounds: sanitizeSidebarDetachedBounds(
-        parsed.sidebarDetachedBounds,
-      ),
+      sidebarDetachedBounds: sanitizeSidebarDetachedBounds(parsed.sidebarDetachedBounds),
       devtoolsPanelDetachedBounds: sanitizeDevToolsDetachedBounds(
         parsed.devtoolsPanelDetachedBounds,
       ),
@@ -438,6 +435,7 @@ export function loadSettings(): VesselSettings {
         parsed.agentTranscriptMode,
         parsed.showAgentTranscript,
       ),
+      historyRetentionDays: normalizeHistoryRetentionDays(parsed.historyRetentionDays),
     };
   } catch (error) {
     if (fs.existsSync(getSettingsPath())) {
@@ -445,8 +443,7 @@ export function loadSettings(): VesselSettings {
         code: "settings-read-failed",
         severity: "warning",
         title: "Could not read Vessel settings",
-        detail:
-          error instanceof Error ? error.message : "Unknown settings error.",
+        detail: error instanceof Error ? error.message : "Unknown settings error.",
         action: "Falling back to built-in defaults for this launch.",
       });
     }
@@ -462,11 +459,9 @@ function persistNow(): Promise<void> {
     saveTimer = null;
   }
   const filePath = getSettingsPath();
-  return writeFileAtomic(
-    filePath,
-    JSON.stringify(buildPersistedSettings(settings!), null, 2),
-    { mode: 0o600 },
-  ).catch((err) => logger.error("Failed to save settings:", err));
+  return writeFileAtomic(filePath, JSON.stringify(buildPersistedSettings(settings!), null, 2), {
+    mode: 0o600,
+  }).catch((err) => logger.error("Failed to save settings:", err));
 }
 
 function saveSettings(): void {
@@ -492,8 +487,7 @@ export function setSetting<K extends keyof VesselSettings>(
   } else if (key === "sidebarDetachedBounds") {
     settings!.sidebarDetachedBounds = sanitizeSidebarDetachedBounds(value);
   } else if (key === "devtoolsPanelDetachedBounds") {
-    settings!.devtoolsPanelDetachedBounds =
-      sanitizeDevToolsDetachedBounds(value);
+    settings!.devtoolsPanelDetachedBounds = sanitizeDevToolsDetachedBounds(value);
   } else if (key === "sourceDoNotAllowList") {
     settings!.sourceDoNotAllowList = sanitizeStringList(value);
   } else if (key === "chatProvider") {
@@ -508,9 +502,7 @@ export function setSetting<K extends keyof VesselSettings>(
         !incomingApiKey &&
         nextProvider.hasApiKey === true &&
         existingSecret?.providerId === nextProvider.id;
-      const resolvedApiKey = preserveExisting
-        ? existingSecret?.apiKey || ""
-        : incomingApiKey;
+      const resolvedApiKey = preserveExisting ? existingSecret?.apiKey || "" : incomingApiKey;
 
       if (resolvedApiKey) {
         writeStoredProviderSecret({
@@ -525,9 +517,7 @@ export function setSetting<K extends keyof VesselSettings>(
         ...nextProvider,
         apiKey: resolvedApiKey,
         hasApiKey: Boolean(resolvedApiKey),
-        reasoningEffort: sanitizeReasoningEffortLevel(
-          nextProvider.reasoningEffort,
-        ),
+        reasoningEffort: sanitizeReasoningEffortLevel(nextProvider.reasoningEffort),
       };
     }
   } else {

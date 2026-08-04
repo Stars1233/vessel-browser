@@ -11,7 +11,8 @@
  *   PREMIUM_TOKEN_SECRET — random string used to sign premium auth tokens
  *   RESEND_API_KEY       — API key for transactional activation emails
  *   PREMIUM_FROM_EMAIL   — verified sender, e.g. Vessel <premium@example.com>
- *   ACTIVATION_KV        — KV binding for activation attempts, checkout redemption, and feedback spam guard
+ *   ACTIVATION_KV        — KV binding for checkout redemption and AI usage compatibility storage
+ *   ACTIVATION_GUARD     — Durable Object binding for serialized abuse guards and AI budgets
  *   OPENROUTER_API_KEY   — OpenRouter key used by hosted Vessel AI inference
  *   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON — Play Developer API service account JSON
  *   ANDROID_PACKAGE_NAME — optional package-name allowlist for Play purchase verification
@@ -21,6 +22,13 @@
  * Google Play subscription product IDs:
  *   vessel_starter_monthly, vessel_plus_monthly, vessel_pro_monthly
  */
+
+import {
+  AiBudgetUnavailableError,
+  createAiUsageLedger,
+  emptyUsage,
+  executePremiumAiCompletion,
+} from "./premium-ai.js";
 
 export { ActivationAttemptGuard } from "./activation-attempt-guard.js";
 
@@ -32,6 +40,8 @@ const CHECKOUT_REDEMPTION_TTL_SECONDS = Math.ceil(PREMIUM_AUTH_TTL_MS / 1000);
 const MAX_FEEDBACK_MESSAGE_LENGTH = 5000;
 const FEEDBACK_SPAM_GUARD_WINDOW_SECONDS = 60 * 60;
 const FEEDBACK_SPAM_GUARD_MAX = 5;
+const ACTIVATION_START_GUARD_WINDOW_MS = ACTIVATION_CHALLENGE_TTL_MS;
+const ACTIVATION_START_GUARD_MAX = 5;
 const VESSEL_AI_MODEL = "minimax/minimax-m3";
 const OPENROUTER_API = "https://openrouter.ai/api/v1";
 const MOBILE_BACKEND_PROXY_METHODS = new Map([
@@ -741,53 +751,72 @@ async function sendFeedbackEmail(env, email, message, source = "") {
   }
 }
 
-async function checkFeedbackSpamGuard(request, env) {
-  if (!env.ACTIVATION_KV) {
-    return missingKvResponse(request, env, "Feedback submission");
-  }
-
-  try {
-    const rawClientId =
-      request.headers.get("cf-connecting-ip") ||
-      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-      "unknown";
-    const key = `feedback-rate:${await sha256Hex(rawClientId)}`;
-    const current = Number(await env.ACTIVATION_KV.get(key));
-    const next = Number.isFinite(current) ? current + 1 : 1;
-
-    if (next > FEEDBACK_SPAM_GUARD_MAX) {
-      return corsResponse(
-        request,
-        env,
-        { error: "Too many feedback messages. Try again later." },
-        429,
-      );
-    }
-
-    await env.ACTIVATION_KV.put(key, String(next), {
-      expirationTtl: FEEDBACK_SPAM_GUARD_WINDOW_SECONDS,
-    });
-  } catch (error) {
-    console.warn("Feedback spam guard failed closed:", error);
-    return missingKvResponse(request, env, "Feedback submission");
-  }
-  return null;
+function requestClientId(request) {
+  return (
+    request.headers.get("cf-connecting-ip") ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "unknown"
+  );
 }
 
-async function runActivationGuardAction(env, challengeToken, action, expiresAt) {
+async function runSerializedGuardAction(env, key, payload) {
   if (!env.ACTIVATION_GUARD) {
     throw new Error("ACTIVATION_GUARD binding is not configured");
   }
-  const guard = env.ACTIVATION_GUARD.getByName(await sha256Hex(challengeToken));
+  const guard = env.ACTIVATION_GUARD.getByName(await sha256Hex(key));
   const response = await guard.fetch("https://activation-guard.internal/action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, expiresAt }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error(`Activation attempt guard returned ${response.status}`);
+    throw new Error(`Serialized guard returned ${response.status}`);
   }
   return response.json();
+}
+
+async function checkSerializedRateLimit(
+  request,
+  env,
+  key,
+  max,
+  windowMs,
+  capability,
+  limitedMessage,
+) {
+  try {
+    const result = await runSerializedGuardAction(env, key, {
+      action: "rate-limit",
+      max,
+      windowMs,
+    });
+    if (result.status === "limited") {
+      return corsResponse(request, env, { error: limitedMessage }, 429);
+    }
+    return null;
+  } catch (error) {
+    console.warn(`${capability} guard failed closed:`, error);
+    return missingKvResponse(request, env, capability);
+  }
+}
+
+async function checkFeedbackSpamGuard(request, env) {
+  return checkSerializedRateLimit(
+    request,
+    env,
+    `feedback-rate:${requestClientId(request)}`,
+    FEEDBACK_SPAM_GUARD_MAX,
+    FEEDBACK_SPAM_GUARD_WINDOW_SECONDS * 1000,
+    "Feedback submission",
+    "Too many feedback messages. Try again later.",
+  );
+}
+
+async function runActivationGuardAction(env, challengeToken, action, expiresAt) {
+  return runSerializedGuardAction(env, challengeToken, {
+    action,
+    expiresAt,
+  });
 }
 
 function activationGuardBlockResponse(request, env, result) {
@@ -873,73 +902,22 @@ async function markCheckoutSessionRedeemed(env, key) {
   });
 }
 
-function currentUsagePeriod() {
-  const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-async function usageSubjectKey(subject) {
-  return sha256Hex(String(subject || "anonymous").trim().toLowerCase());
-}
-
-function emptyUsage(period = currentUsagePeriod()) {
-  return {
-    period,
-    requests: 0,
-    estimatedCostUsd: 0,
-    promptTokens: 0,
-    completionTokens: 0,
-  };
-}
-
-async function getUsage(env, subject) {
-  const period = currentUsagePeriod();
-  if (!env.ACTIVATION_KV) return emptyUsage(period);
-  const key = `ai-usage:${period}:${await usageSubjectKey(subject)}`;
-  const raw = await env.ACTIVATION_KV.get(key);
-  if (!raw) return emptyUsage(period);
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      ...emptyUsage(period),
-      ...parsed,
-      period,
-    };
-  } catch {
-    return emptyUsage(period);
-  }
-}
-
-async function putUsage(env, subject, usage) {
-  if (!env.ACTIVATION_KV) return;
-  const key = `ai-usage:${usage.period}:${await usageSubjectKey(subject)}`;
-  await env.ACTIVATION_KV.put(key, JSON.stringify(usage), {
-    expirationTtl: USAGE_LEDGER_TTL_SECONDS,
+function createUsageLedger(env) {
+  return createAiUsageLedger({
+    kv: env.ACTIVATION_KV,
+    guardAction: env.ACTIVATION_GUARD
+      ? (key, payload) => runSerializedGuardAction(env, key, payload)
+      : null,
+    hashSubject: sha256Hex,
+    ledgerTtlSeconds: USAGE_LEDGER_TTL_SECONDS,
+    onReadError(error) {
+      console.warn("AI usage status guard unavailable; using compatibility ledger:", error);
+    },
   });
 }
 
-function estimateMinimaxCostUsd(promptTokens = 0, completionTokens = 0) {
-  const inputCost = (Number(promptTokens) || 0) * 0.30 / 1_000_000;
-  const outputCost = (Number(completionTokens) || 0) * 1.20 / 1_000_000;
-  return (inputCost + outputCost) * 1.055;
-}
-
-async function recordAiUsage(env, subject, usagePayload) {
-  const current = await getUsage(env, subject);
-  const promptTokens = Number(usagePayload?.prompt_tokens || usagePayload?.promptTokens || 0);
-  const completionTokens = Number(
-    usagePayload?.completion_tokens || usagePayload?.completionTokens || 0,
-  );
-  const next = {
-    ...current,
-    requests: current.requests + 1,
-    promptTokens: current.promptTokens + promptTokens,
-    completionTokens: current.completionTokens + completionTokens,
-    estimatedCostUsd:
-      current.estimatedCostUsd + estimateMinimaxCostUsd(promptTokens, completionTokens),
-  };
-  await putUsage(env, subject, next);
-  return next;
+async function getUsage(env, subject) {
+  return createUsageLedger(env).get(subject);
 }
 
 function usageSummaryForPlan(usage, plan) {
@@ -973,6 +951,25 @@ async function buildEntitlementStatus(env, payload, status = "active", expiresAt
     plan,
     planLabel: planConfig(plan).label,
     source: payload?.source || "entitlement",
+    usage: usageSummaryForPlan(usage, plan),
+  };
+}
+
+async function buildExistingTokenEntitlementStatus(env, token, verificationToken) {
+  const plan = normalizePlan(token?.plan);
+  const customerId = token?.customerId || "";
+  const email = normalizeEmail(token?.email || "");
+  const usage = await getUsage(env, customerId || email);
+  const expiresAt = new Date(token.exp).toISOString();
+  return {
+    status: "active",
+    customerId,
+    verificationToken,
+    email,
+    expiresAt,
+    plan,
+    planLabel: planConfig(plan).label,
+    source: token?.source || "entitlement",
     usage: usageSummaryForPlan(usage, plan),
   };
 }
@@ -1316,6 +1313,28 @@ async function handleActivationStart(request, env) {
     );
   }
 
+  const clientRateLimit = await checkSerializedRateLimit(
+    request,
+    env,
+    `activation-start-ip:${requestClientId(request)}`,
+    ACTIVATION_START_GUARD_MAX,
+    ACTIVATION_START_GUARD_WINDOW_MS,
+    "Premium activation",
+    "Too many activation requests. Try again later.",
+  );
+  if (clientRateLimit) return clientRateLimit;
+
+  const emailRateLimit = await checkSerializedRateLimit(
+    request,
+    env,
+    `activation-start-email:${email}`,
+    ACTIVATION_START_GUARD_MAX,
+    ACTIVATION_START_GUARD_WINDOW_MS,
+    "Premium activation",
+    "Too many activation requests. Try again later.",
+  );
+  if (emailRateLimit) return emailRateLimit;
+
   const now = Date.now();
   const exp = now + ACTIVATION_CHALLENGE_TTL_MS;
   const nonce = crypto.randomUUID();
@@ -1601,7 +1620,11 @@ async function handleEntitlement(request, env) {
     );
   }
 
-  return corsResponse(request, env, await buildEntitlementStatus(env, token));
+  return corsResponse(
+    request,
+    env,
+    await buildExistingTokenEntitlementStatus(env, token, identifier),
+  );
 }
 
 async function handlePlayVerify(request, env) {
@@ -1705,24 +1728,14 @@ async function handleAiChatCompletions(request, env) {
   }
 
   const subject = token.customerId || token.email;
-  const usage = await getUsage(env, subject);
-  if (usage.estimatedCostUsd >= config.monthlyAiBudgetUsd) {
+  if (!env.OPENROUTER_API_KEY || !env.ACTIVATION_GUARD) {
     return corsResponse(
       request,
       env,
       {
-        error: "Monthly Vessel AI usage limit reached.",
-        usage: usageSummaryForPlan(usage, plan),
+        error:
+          "Vessel AI is not configured yet. Set OPENROUTER_API_KEY and ACTIVATION_GUARD.",
       },
-      402,
-    );
-  }
-
-  if (!env.OPENROUTER_API_KEY) {
-    return corsResponse(
-      request,
-      env,
-      { error: "Vessel AI is not configured yet. Set OPENROUTER_API_KEY." },
       503,
     );
   }
@@ -1734,51 +1747,40 @@ async function handleAiChatCompletions(request, env) {
     return corsResponse(request, env, { error: "Invalid JSON body" }, 400);
   }
 
-  const upstreamBody = {
-    ...body,
-    model: VESSEL_AI_MODEL,
-    stream: false,
-    max_tokens: Math.min(
-      Number(body.max_tokens || body.max_completion_tokens || config.maxOutputTokens),
-      config.maxOutputTokens,
-    ),
-  };
-
-  const upstream = await fetch(`${OPENROUTER_API}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": String(env.VESSEL_APP_URL || "https://quantaintellect.com"),
-      "X-Title": "Vessel Browser",
-    },
-    body: JSON.stringify(upstreamBody),
-  });
-
-  const text = await upstream.text();
-  let responseBody = text;
-  let responseUsage = null;
+  let result;
   try {
-    const parsed = JSON.parse(text);
-    responseUsage = parsed.usage || null;
-    parsed.model = VESSEL_AI_MODEL;
-    parsed.vessel = {
+    result = await executePremiumAiCompletion({
+      body,
+      config,
       plan,
+      subject,
+      ledger: createUsageLedger(env),
       model: VESSEL_AI_MODEL,
-    };
-    responseBody = JSON.stringify(parsed);
-  } catch {
-    // Keep the upstream body as-is.
+      apiUrl: OPENROUTER_API,
+      apiKey: env.OPENROUTER_API_KEY,
+      appUrl: env.VESSEL_APP_URL,
+    });
+  } catch (error) {
+    if (!(error instanceof AiBudgetUnavailableError)) throw error;
+    console.warn("AI budget guard failed closed:", error);
+    return missingKvResponse(request, env, "Vessel AI");
+  }
+  if (result.kind === "limited") {
+    return corsResponse(
+      request,
+      env,
+      {
+        error: "Monthly Vessel AI usage limit reached.",
+        usage: usageSummaryForPlan(result.usage || emptyUsage(), plan),
+      },
+      402,
+    );
   }
 
-  if (upstream.ok && responseUsage) {
-    await recordAiUsage(env, subject, responseUsage);
-  }
-
-  return new Response(responseBody, {
-    status: upstream.status,
+  return new Response(result.body, {
+    status: result.status,
     headers: {
-      "Content-Type": upstream.headers.get("Content-Type") || "application/json",
+      "Content-Type": result.contentType,
       ...buildCorsHeaders(request, env),
     },
   });

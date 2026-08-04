@@ -4091,3 +4091,252 @@
 .report-card .secondary:hover:not(:disabled) {
     background: var(--surface-active);
 }
+
+/* Reliability surfaces: durable runs, conversation threads, and steering. */
+.agent-steering-input,
+.chat-approval-steering {
+    min-width: 0;
+    flex: 1 1 180px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 11px;
+}
+
+.agent-steering-input:focus,
+.chat-approval-steering:focus {
+    outline: 2px solid color-mix(in srgb, var(--accent-primary) 45%, transparent);
+    outline-offset: 1px;
+    border-color: var(--accent-primary);
+}
+
+.agent-card-actions,
+.chat-approval-actions {
+    flex-wrap: wrap;
+}
+
+.conversation-create-row {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 6px;
+}
+
+.conversation-create-row .agent-steering-input {
+    flex: 1 1 auto;
+    padding: 6px 8px;
+}
+
+.conversation-create-row .agent-primary-button {
+    width: auto;
+    height: auto;
+    min-height: 0;
+    padding: 6px 10px;
+}
+
+.agent-card-actions .active {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+}
+
+.run-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    padding: 10px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.conversation-row {
+    min-height: 0;
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 6px 8px;
+}
+
+.conversation-thread-detail > .agent-steering-input {
+    flex: 0 0 auto;
+    padding: 6px 8px;
+}
+
+.conversation-thread-actions {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 6px;
+}
+
+.conversation-thread-actions .agent-control-button {
+    width: auto;
+}
+
+.conversation-chat-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-raised);
+}
+
+.conversation-chat-open {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.conversation-chat-open strong,
+.conversation-chat-open span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.conversation-chat-open strong {
+    font-size: 12px;
+}
+
+.conversation-chat-open span {
+    color: var(--text-secondary);
+    font-size: 10px;
+}
+
+.conversation-chat-open:hover strong {
+    color: var(--accent-primary);
+}
+
+.conversation-chat-open:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.conversation-chat-row > .agent-control-button,
+.conversation-chat-edit-actions .agent-control-button,
+.conversation-chat-edit-actions .agent-primary-button {
+    width: auto;
+    height: auto;
+    min-height: 0;
+    padding: 6px 8px;
+}
+
+.conversation-chat-row > .agent-steering-input {
+    width: 100%;
+    min-width: 0;
+    flex: none;
+    padding: 6px 8px;
+}
+
+.conversation-chat-edit-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.run-row:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+}
+
+.run-row:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+.run-row-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.run-row-copy strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.run-row-copy span {
+    color: var(--text-secondary);
+    font-size: 10px;
+    text-transform: capitalize;
+}
+
+.run-status {
+    width: 7px;
+    height: 30px;
+    border-radius: 999px;
+    background: var(--text-tertiary);
+}
+
+.run-status-running { background: #56a8ff; }
+.run-status-waiting-approval { background: #f4b95f; }
+.run-status-completed { background: #62c98c; }
+.run-status-failed { background: #f17878; }
+.run-status-cancelled,
+.run-status-interrupted { background: #a796c7; }
+
+.run-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.run-output {
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: var(--font-mono, monospace);
+    line-height: 1.5;
+}
+
+.run-event {
+    display: grid;
+    grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+    gap: 9px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 10px;
+}
+
+.run-event span:first-child {
+    color: var(--text-primary);
+    font-family: var(--font-mono, monospace);
+}
+
+.conversation-message {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.conversation-message strong {
+    color: var(--text-secondary);
+    text-transform: capitalize;
+}

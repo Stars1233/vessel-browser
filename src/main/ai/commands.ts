@@ -32,6 +32,7 @@ export async function handleAIQuery(
   runtime?: AgentRuntime,
   history?: AIMessage[],
   researchOrchestrator?: ResearchOrchestrator,
+  runId?: string,
 ): Promise<void> {
   // Research Desk: during briefing/planning, use the orchestrator's system prompt
   if (researchOrchestrator) {
@@ -76,9 +77,7 @@ export async function handleAIQuery(
   const lowerQuery = query.toLowerCase().trim();
 
   const isSummarize =
-    lowerQuery.startsWith("summarize") ||
-    lowerQuery.startsWith("tldr") ||
-    lowerQuery === "summary";
+    lowerQuery.startsWith("summarize") || lowerQuery.startsWith("tldr") || lowerQuery === "summary";
 
   // Use agent path when provider supports tools and we have a tab manager
   if (provider.streamAgentQuery && tabManager && activeWebContents && runtime) {
@@ -101,11 +100,7 @@ export async function handleAIQuery(
       }
       const structuredContext =
         provider.agentToolProfile === "compact"
-          ? buildCompactScopedContext(
-              pageContent,
-              defaultReadMode,
-              pageType,
-            )
+          ? buildCompactScopedContext(pageContent, defaultReadMode, pageType)
           : buildScopedContext(pageContent, defaultReadMode);
       const runtimeState = runtime.getState();
       const recentCheckpoints = runtimeState.checkpoints
@@ -144,15 +139,13 @@ export async function handleAIQuery(
         tabManager,
         runtime,
         toolProfile: provider.agentToolProfile,
+        runId,
       };
 
       // Speedee: dynamically reorder tools based on current page context
-      const contextualTools = pruneToolsForContext(
-        AGENT_TOOLS,
-        pageType,
-        query,
-        { profile: provider.agentToolProfile },
-      );
+      const contextualTools = pruneToolsForContext(AGENT_TOOLS, pageType, query, {
+        profile: provider.agentToolProfile,
+      });
 
       const trace = createTraceSession(query, activeTabUrl, activeTabTitle);
 
@@ -237,11 +230,5 @@ export async function handleAIQuery(
     prompt = buildGeneralPrompt(query);
   }
 
-  await provider.streamQuery(
-    prompt.system,
-    prompt.user,
-    onChunk,
-    onEnd,
-    history,
-  );
+  await provider.streamQuery(prompt.system, prompt.user, onChunk, onEnd, history);
 }

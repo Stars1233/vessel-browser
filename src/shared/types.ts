@@ -1,3 +1,6 @@
+import type { HistoryRetentionDays } from "./run-types";
+import type { ActionClass } from "./policy-types";
+
 export type TabRole = "primary" | "research" | "auth" | "scratch";
 
 export const TAB_GROUP_COLORS = [
@@ -135,16 +138,9 @@ export interface StructuredDataObject {
 }
 
 export type StructuredDataValue =
-  | StructuredDataPrimitive
-  | StructuredDataObject
-  | StructuredDataValue[];
+  StructuredDataPrimitive | StructuredDataObject | StructuredDataValue[];
 
-export type StructuredDataSource =
-  | "json-ld"
-  | "microdata"
-  | "rdfa"
-  | "meta"
-  | "page";
+export type StructuredDataSource = "json-ld" | "microdata" | "rdfa" | "meta" | "page";
 
 export interface StructuredDataEntity {
   source: StructuredDataSource;
@@ -155,11 +151,7 @@ export interface StructuredDataEntity {
   attributes: StructuredDataObject;
 }
 
-export type PageIssueKind =
-  | "rate-limit"
-  | "bot-check"
-  | "access-denied"
-  | "not-found";
+export type PageIssueKind = "rate-limit" | "bot-check" | "access-denied" | "not-found";
 
 export type PageIssueSeverity = "warning" | "error";
 
@@ -189,12 +181,7 @@ export interface OverlayRadioOption {
 export interface PageOverlay {
   type: "dialog" | "modal" | "overlay";
   kind?:
-    | "cookie_consent"
-    | "selection_modal"
-    | "alert"
-    | "cart_confirmation"
-    | "drawer"
-    | "overlay";
+    "cookie_consent" | "selection_modal" | "alert" | "cart_confirmation" | "drawer" | "overlay";
   role?: string;
   label?: string;
   selector?: string;
@@ -269,12 +256,7 @@ export type ApprovalMode = "auto" | "confirm-dangerous" | "manual";
 
 export type ActionSource = "ai" | "mcp" | "user" | "system";
 
-export type ActionStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "waiting-approval"
-  | "rejected";
+export type ActionStatus = "running" | "completed" | "failed" | "waiting-approval" | "rejected";
 
 export interface SessionTabSnapshot {
   id: string;
@@ -338,6 +320,7 @@ export interface AgentActionEntry {
   finishedAt?: string;
   durationMs?: number;
   tabId?: string | null;
+  runId?: string;
   resultSummary?: string;
   error?: string;
 }
@@ -350,6 +333,12 @@ export interface PendingApproval {
   argsSummary: string;
   reason: string;
   requestedAt: string;
+  runId: string | null;
+  domain: string | null;
+  url: string | null;
+  actionClass: ActionClass;
+  redactedArgs: Record<string, unknown>;
+  undoable: boolean;
 }
 
 export interface AgentCheckpoint {
@@ -544,8 +533,8 @@ export interface CodexOAuthTokens {
   idToken: string;
   /** API-key-style token obtained by exchanging the ChatGPT id_token for openai-api-key. */
   apiKey?: string;
-  expiresAt: number;       // epoch ms
-  accountId: string;       // chatgpt_account_id from JWT
+  expiresAt: number; // epoch ms
+  accountId: string; // chatgpt_account_id from JWT
   accountEmail?: string;
 }
 
@@ -591,9 +580,13 @@ export interface PremiumState {
   expiresAt: string;
 }
 
-export type SearchEngineId = "duckduckgo" | "google" | "bing" | "brave" | "ecosia" | "kagi" | "none";
+export type SearchEngineId =
+  "duckduckgo" | "google" | "bing" | "brave" | "ecosia" | "kagi" | "none";
 
-export const SEARCH_ENGINE_PRESETS: Record<Exclude<SearchEngineId, "none">, { label: string; url: string }> = {
+export const SEARCH_ENGINE_PRESETS: Record<
+  Exclude<SearchEngineId, "none">,
+  { label: string; url: string }
+> = {
   duckduckgo: { label: "DuckDuckGo", url: "https://duckduckgo.com/?q=" },
   google: { label: "Google", url: "https://www.google.com/search?q=" },
   bing: { label: "Bing", url: "https://www.bing.com/search?q=" },
@@ -623,6 +616,7 @@ export interface VesselSettings {
   premium: PremiumState;
   telemetryEnabled: boolean;
   defaultSearchEngine: SearchEngineId;
+  historyRetentionDays: HistoryRetentionDays;
 }
 
 export type InternalSettingKey = "premium";
@@ -761,13 +755,7 @@ export interface ScheduledJob {
 
 // --- Highlights ---
 
-export type HighlightColor =
-  | "yellow"
-  | "red"
-  | "green"
-  | "blue"
-  | "purple"
-  | "orange";
+export type HighlightColor = "yellow" | "red" | "green" | "blue" | "purple" | "orange";
 
 export type HighlightSource = "agent" | "user";
 
@@ -835,7 +823,14 @@ export interface HumanVaultAuditEntry {
   credentialId: string;
   credentialTitle: string;
   domain: string;
-  action: "human_list" | "human_autofill" | "human_copy" | "human_view" | "human_create" | "human_update" | "human_delete";
+  action:
+    | "human_list"
+    | "human_autofill"
+    | "human_copy"
+    | "human_view"
+    | "human_create"
+    | "human_update"
+    | "human_delete";
   approved: boolean;
   source: "settings_ui" | "mcp_tool";
 }

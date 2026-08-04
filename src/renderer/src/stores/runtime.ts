@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import type { AgentRuntimeState, ApprovalMode } from "../../../shared/types";
+import type { ApprovalResolution } from "../../../shared/policy-types";
 import { createLogger } from "../../../shared/logger";
 
 const logger = createLogger("RuntimeStore");
@@ -22,9 +23,7 @@ const DEFAULT_RUNTIME_STATE: AgentRuntimeState = {
   undoInfo: null,
 };
 
-const [runtimeState, setRuntimeState] = createSignal<AgentRuntimeState>(
-  DEFAULT_RUNTIME_STATE,
-);
+const [runtimeState, setRuntimeState] = createSignal<AgentRuntimeState>(DEFAULT_RUNTIME_STATE);
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -56,14 +55,12 @@ export function useRuntime() {
     runtimeState,
     pause: () => window.vessel.ai.pause(),
     resume: () => window.vessel.ai.resume(),
-    setApprovalMode: (mode: ApprovalMode) =>
-      window.vessel.ai.setApprovalMode(mode),
-    resolveApproval: (approvalId: string, approved: boolean) =>
-      window.vessel.ai.resolveApproval(approvalId, approved),
+    setApprovalMode: (mode: ApprovalMode) => window.vessel.ai.setApprovalMode(mode),
+    resolveApproval: (approvalId: string, resolution: ApprovalResolution) =>
+      window.vessel.ai.resolveApproval(approvalId, resolution),
     createCheckpoint: (name?: string, note?: string) =>
       window.vessel.ai.createCheckpoint(name, note),
-    restoreCheckpoint: (checkpointId: string) =>
-      window.vessel.ai.restoreCheckpoint(checkpointId),
+    restoreCheckpoint: (checkpointId: string) => window.vessel.ai.restoreCheckpoint(checkpointId),
     updateCheckpointNote: (checkpointId: string, note?: string) =>
       window.vessel.ai.updateCheckpointNote(checkpointId, note),
     undoLastAction: () => window.vessel.ai.undoLastAction(),

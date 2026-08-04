@@ -19,20 +19,14 @@ import type {
   TaskMemory,
   TaskTrackerState,
 } from "../../shared/types";
+import type { ActionClass, ApprovalResolution, PolicyEvaluation } from "../../shared/policy-types";
+import type { PolicyManager } from "../policy/manager";
+import { classifyAction } from "../policy/action-class";
+import { redactRunValue } from "../runs/redaction";
 import type { TabManager } from "../tabs/tab-manager";
-import {
-  getMcpStatus,
-  onMcpStatusChange,
-} from "../health/runtime-health";
-import {
-  isUndoableAction,
-  isUndoableResult,
-} from "./undo-policy";
-import {
-  createTaskTracker,
-  formatTaskTracker,
-  updateTaskTracker,
-} from "../ai/task-tracker";
+import { getMcpStatus, onMcpStatusChange } from "../health/runtime-health";
+import { isUndoableAction, isUndoableResult } from "./undo-policy";
+import { createTaskTracker, formatTaskTracker, updateTaskTracker } from "../ai/task-tracker";
 import {
   createTaskMemory,
   updateTaskMemory as updateTaskMemoryState,
@@ -49,10 +43,7 @@ const MAX_UNDO_SNAPSHOTS = 10;
 const MAX_TRANSCRIPT_ENTRIES = 40;
 const MAX_TRANSCRIPT_TEXT_LENGTH = 8000;
 const PERSIST_DEBOUNCE_MS = 500;
-const INTERRUPTED_ACTION_STATUSES = new Set<ActionStatus>([
-  "running",
-  "waiting-approval",
-]);
+const INTERRUPTED_ACTION_STATUSES = new Set<ActionStatus>(["running", "waiting-approval"]);
 const logger = createLogger("Runtime");
 
 interface RuntimePersistenceShape {
@@ -74,11 +65,18 @@ interface UndoSnapshot {
   capturedAt: string;
 }
 
+interface AgentRuntimeOptions {
+  policyManager?: PolicyManager;
+}
+
 interface ControlledActionOptions {
   source: ActionSource;
   name: string;
   args?: Record<string, unknown>;
   tabId?: string | null;
+  runId?: string;
+  url?: string | null;
+  domain?: string | null;
   dangerous?: boolean;
   requiresApproval?: boolean;
   undoable?: boolean;
@@ -91,7 +89,8 @@ export interface AgentRuntimeActionLifecycleEvent {
   name: string;
   args: Record<string, unknown>;
   tabId: string | null;
-  phase: "started" | "waiting-approval" | "rejected" | "completed" | "failed";
+  runId: string | null;
+  phase: "started" | "waiting-approval" | "approval-resolved" | "rejected" | "completed" | "failed";
   detail?: string;
   durationMs?: number;
 }
@@ -105,8 +104,7 @@ function summarizeArgs(args: Record<string, unknown>): string {
   if (entries.length === 0) return "No arguments";
   return entries
     .map(([key, value]) => {
-      const rendered =
-        typeof value === "string" ? value : JSON.stringify(value);
+      const rendered = typeof value === "string" ? value : JSON.stringify(value);
       return `${key}=${String(rendered).slice(0, 120)}`;
     })
     .join(", ");
@@ -143,8 +141,7 @@ function sanitizePersistence(
               status: "failed" as ActionStatus,
               finishedAt: action.finishedAt ?? recoveredAt,
               error:
-                action.error ??
-                "Action was interrupted before the previous Vessel session ended.",
+                action.error ?? "Action was interrupted before the previous Vessel session ended.",
             }
           : action,
       )
@@ -173,21 +170,21 @@ function sanitizePersistence(
 export class AgentRuntime {
   private state: AgentRuntimeState;
   private updateListener: ((state: AgentRuntimeState) => void) | null = null;
-  private actionLifecycleListener:
-    | ((event: AgentRuntimeActionLifecycleEvent) => void)
-    | null = null;
-  private pendingResolvers = new Map<string, (approved: boolean) => void>();
+  private actionLifecycleListener: ((event: AgentRuntimeActionLifecycleEvent) => void) | null =
+    null;
+  private pendingResolvers = new Map<string, (resolution: ApprovalResolution) => void>();
   private undoSnapshots: UndoSnapshot[] = [];
   private mcpUnsubscribe: (() => void) | null = null;
 
-  constructor(private readonly tabManager: TabManager) {
+  constructor(
+    private readonly tabManager: TabManager,
+    private readonly options: AgentRuntimeOptions = {},
+  ) {
     this.state = this.loadPersistedState();
     this.mcpUnsubscribe = onMcpStatusChange(() => this.emit());
   }
 
-  setUpdateListener(
-    listener: ((state: AgentRuntimeState) => void) | null,
-  ): void {
+  setUpdateListener(listener: ((state: AgentRuntimeState) => void) | null): void {
     this.updateListener = listener;
     if (listener) {
       listener(this.getState());
@@ -210,7 +207,7 @@ export class AgentRuntime {
 
     // Resolve any pending approvals to unblock waiting code
     for (const [id, resolve] of this.pendingResolvers) {
-      resolve(false);
+      resolve({ decision: "reject" });
       this.pendingResolvers.delete(id);
     }
 
@@ -245,14 +242,12 @@ export class AgentRuntime {
         const actionIds = new Set(approvals.map((approval) => approval.actionId));
         this.state.supervisor.pendingApprovals = [];
         this.state.actions = this.state.actions.map((action) =>
-          actionIds.has(action.id)
-            ? { ...action, status: "running", error: undefined }
-            : action,
+          actionIds.has(action.id) ? { ...action, status: "running", error: undefined } : action,
         );
         for (const approval of approvals) {
           const resolve = this.pendingResolvers.get(approval.id);
           this.pendingResolvers.delete(approval.id);
-          resolve?.(true);
+          resolve?.({ decision: "approve-once" });
         }
       }
     }
@@ -282,22 +277,17 @@ export class AgentRuntime {
       snapshot,
       taskMemory: this.state.taskMemory ? clone(this.state.taskMemory) : null,
     };
-    this.state.checkpoints = [...this.state.checkpoints, checkpoint].slice(
-      -MAX_CHECKPOINTS,
-    );
+    this.state.checkpoints = [...this.state.checkpoints, checkpoint].slice(-MAX_CHECKPOINTS);
     this.emit();
     void this.flushPersist();
     return clone(checkpoint);
   }
 
   restoreCheckpoint(checkpointId: string): AgentCheckpoint | null {
-    const checkpoint =
-      this.state.checkpoints.find((item) => item.id === checkpointId) || null;
+    const checkpoint = this.state.checkpoints.find((item) => item.id === checkpointId) || null;
     if (!checkpoint) return null;
     this.tabManager.restoreSession(checkpoint.snapshot);
-    this.state.taskMemory = checkpoint.taskMemory
-      ? clone(checkpoint.taskMemory)
-      : null;
+    this.state.taskMemory = checkpoint.taskMemory ? clone(checkpoint.taskMemory) : null;
     this.captureSession(`Restored ${checkpoint.name}`);
     return clone(checkpoint);
   }
@@ -367,9 +357,7 @@ export class AgentRuntime {
     const incomingText = input.text.slice(0, MAX_TRANSCRIPT_TEXT_LENGTH);
 
     if (input.streamId) {
-      const existing = this.state.transcript.find(
-        (entry) => entry.streamId === input.streamId,
-      );
+      const existing = this.state.transcript.find((entry) => entry.streamId === input.streamId);
       if (existing) {
         existing.source = input.source;
         existing.kind = kind;
@@ -396,9 +384,7 @@ export class AgentRuntime {
       status: mode === "final" ? "final" : "streaming",
       streamId: input.streamId?.trim() || undefined,
     };
-    this.state.transcript = [...this.state.transcript, entry].slice(
-      -MAX_TRANSCRIPT_ENTRIES,
-    );
+    this.state.transcript = [...this.state.transcript, entry].slice(-MAX_TRANSCRIPT_ENTRIES);
     this.emit();
     return clone(entry);
   }
@@ -411,10 +397,7 @@ export class AgentRuntime {
 
   ensureTaskTracker(goal: string, startUrl?: string): TaskTrackerState {
     const trimmedGoal = goal.trim();
-    if (
-      this.state.taskTracker &&
-      this.state.taskTracker.goal.trim() === trimmedGoal
-    ) {
+    if (this.state.taskTracker && this.state.taskTracker.goal.trim() === trimmedGoal) {
       return clone(this.state.taskTracker);
     }
 
@@ -425,11 +408,7 @@ export class AgentRuntime {
 
   updateTaskTracker(actionName: string, result: string): TaskTrackerState | null {
     if (!this.state.taskTracker) return null;
-    this.state.taskTracker = updateTaskTracker(
-      this.state.taskTracker,
-      actionName,
-      result,
-    );
+    this.state.taskTracker = updateTaskTracker(this.state.taskTracker, actionName, result);
     this.emit();
     return clone(this.state.taskTracker);
   }
@@ -473,10 +452,7 @@ export class AgentRuntime {
 
   setTaskBlocker(blocker: string | null): TaskMemory | null {
     if (!this.state.taskMemory || this.state.taskMemory.completedAt) return null;
-    this.state.taskMemory = setTaskMemoryBlocker(
-      this.state.taskMemory,
-      blocker,
-    );
+    this.state.taskMemory = setTaskMemoryBlocker(this.state.taskMemory, blocker);
     this.emit();
     return clone(this.state.taskMemory);
   }
@@ -565,10 +541,15 @@ export class AgentRuntime {
     const progress = flow.steps
       .map((s, i) => {
         const marker =
-          s.status === "done" ? "\u2713" :
-          s.status === "failed" ? "\u2717" :
-          s.status === "skipped" ? "-" :
-          i === flow.currentStepIndex ? "\u2192" : " ";
+          s.status === "done"
+            ? "\u2713"
+            : s.status === "failed"
+              ? "\u2717"
+              : s.status === "skipped"
+                ? "-"
+                : i === flow.currentStepIndex
+                  ? "\u2192"
+                  : " ";
         const detail = s.detail ? ` (${s.detail})` : "";
         return `[${marker}] ${s.label}${detail}`;
       })
@@ -581,6 +562,9 @@ export class AgentRuntime {
     name,
     args = {},
     tabId = null,
+    runId,
+    url = null,
+    domain = null,
     dangerous = false,
     requiresApproval = false,
     undoable,
@@ -591,6 +575,7 @@ export class AgentRuntime {
       name,
       args,
       tabId,
+      runId,
     });
     const actionStartedAt = Date.now();
     const transcriptStreamId = `action:${action.id}`;
@@ -602,6 +587,7 @@ export class AgentRuntime {
       name,
       args,
       tabId,
+      runId: runId ?? null,
       phase: "started",
       detail: summarizeArgs(args),
     });
@@ -615,14 +601,41 @@ export class AgentRuntime {
       mode: "replace",
     });
 
-    const approvalReason = this.getApprovalReason(dangerous, requiresApproval);
-    if (approvalReason) {
+    const actionClass = classifyAction(name);
+    const resolvedDomain = domain ?? this.domainFromUrl(url);
+    const approvalEvaluation = this.getApprovalEvaluation({
+      actionClass,
+      domain: resolvedDomain,
+      runId: runId ?? null,
+      dangerous,
+      requiresApproval,
+      exactAction: name,
+    });
+    if (approvalEvaluation.decision === "deny") {
+      const reason = approvalEvaluation.reason ?? "Denied by policy";
+      this.finishAction(action.id, "rejected", undefined, reason);
       this.emitActionLifecycle({
         actionId: action.id,
         source,
         name,
         args,
         tabId,
+        runId: runId ?? null,
+        phase: "rejected",
+        detail: reason,
+        durationMs: Date.now() - actionStartedAt,
+      });
+      return `Action denied: ${name}. ${reason}`;
+    }
+    if (approvalEvaluation.decision === "ask") {
+      const approvalReason = approvalEvaluation.reason ?? "Approval required by policy";
+      this.emitActionLifecycle({
+        actionId: action.id,
+        source,
+        name,
+        args,
+        tabId,
+        runId: runId ?? null,
         phase: "waiting-approval",
         detail: approvalReason,
         durationMs: Date.now() - actionStartedAt,
@@ -635,28 +648,56 @@ export class AgentRuntime {
         streamId: transcriptStreamId,
         mode: "replace",
       });
-      const approved = await this.awaitApproval(action, approvalReason);
-      if (!approved) {
+      const resolution = await this.awaitApproval(action, approvalReason, {
+        actionClass,
+        domain: resolvedDomain,
+        url,
+        undoable: undoable ?? isUndoableAction(name),
+      });
+      this.emitActionLifecycle({
+        actionId: action.id,
+        source,
+        name,
+        args,
+        tabId,
+        runId: runId ?? null,
+        phase: "approval-resolved",
+        detail:
+          resolution.decision === "reject-steer"
+            ? `Rejected with guidance: ${resolution.steering}`
+            : resolution.decision,
+        durationMs: Date.now() - actionStartedAt,
+      });
+      if (resolution.decision === "reject" || resolution.decision === "reject-steer") {
+        const guidance =
+          resolution.decision === "reject-steer" ? `. Human guidance: ${resolution.steering}` : "";
+        this.finishAction(action.id, "rejected", undefined, approvalReason);
         this.emitActionLifecycle({
           actionId: action.id,
           source,
           name,
           args,
           tabId,
+          runId: runId ?? null,
           phase: "rejected",
-          detail: approvalReason,
+          detail: resolution.steering ?? approvalReason,
           durationMs: Date.now() - actionStartedAt,
         });
         this.publishTranscript({
           source,
           kind: "status",
           title: transcriptTitle,
-          text: `Rejected: ${approvalReason}.`,
+          text: `Rejected: ${resolution.steering ?? approvalReason}.`,
           streamId: transcriptStreamId,
           mode: "final",
         });
-        return `Action rejected: ${name}`;
+        return `Action rejected: ${name}${guidance}`;
       }
+      this.persistScopedApproval(resolution, {
+        actionClass,
+        runId: runId ?? null,
+        domain: resolvedDomain,
+      });
     }
 
     this.updateAction(action.id, {
@@ -673,9 +714,7 @@ export class AgentRuntime {
     });
 
     const shouldCaptureUndo = undoable ?? isUndoableAction(name);
-    const undoSnapshot = shouldCaptureUndo
-      ? this.createUndoSnapshot(name)
-      : null;
+    const undoSnapshot = shouldCaptureUndo ? this.createUndoSnapshot(name) : null;
 
     try {
       const result = await executor();
@@ -689,6 +728,7 @@ export class AgentRuntime {
         name,
         args,
         tabId,
+        runId: runId ?? null,
         phase: "completed",
         detail: summarizeText(result),
         durationMs: Date.now() - actionStartedAt,
@@ -704,8 +744,7 @@ export class AgentRuntime {
       this.captureSession();
       return result;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown action failure";
+      const message = error instanceof Error ? error.message : "Unknown action failure";
       this.state.supervisor.lastError = message;
       this.finishAction(action.id, "failed", undefined, message);
       this.emitActionLifecycle({
@@ -714,6 +753,7 @@ export class AgentRuntime {
         name,
         args,
         tabId,
+        runId: runId ?? null,
         phase: "failed",
         detail: summarizeText(message),
         durationMs: Date.now() - actionStartedAt,
@@ -744,50 +784,26 @@ export class AgentRuntime {
     return {
       id: randomUUID(),
       actionName: name,
-      snapshot: this.tabManager.snapshotSession(
-        `Auto-checkpoint before ${name}`,
-      ),
+      snapshot: this.tabManager.snapshotSession(`Auto-checkpoint before ${name}`),
       capturedAt: new Date().toISOString(),
     };
   }
 
   private pushUndoSnapshot(snapshot: UndoSnapshot): void {
-    this.undoSnapshots = [...this.undoSnapshots, snapshot].slice(
-      -MAX_UNDO_SNAPSHOTS,
-    );
+    this.undoSnapshots = [...this.undoSnapshots, snapshot].slice(-MAX_UNDO_SNAPSHOTS);
   }
 
-  resolveApproval(approvalId: string, approved: boolean): AgentRuntimeState {
-    const approval = this.state.supervisor.pendingApprovals.find(
-      (item) => item.id === approvalId,
-    );
+  resolveApproval(approvalId: string, resolution: ApprovalResolution): AgentRuntimeState {
+    const approval = this.state.supervisor.pendingApprovals.find((item) => item.id === approvalId);
     if (!approval) return this.getState();
 
-    this.state.supervisor.pendingApprovals =
-      this.state.supervisor.pendingApprovals.filter(
-        (item) => item.id !== approvalId,
-      );
+    this.state.supervisor.pendingApprovals = this.state.supervisor.pendingApprovals.filter(
+      (item) => item.id !== approvalId,
+    );
 
     const resolve = this.pendingResolvers.get(approvalId);
     this.pendingResolvers.delete(approvalId);
-    if (resolve) {
-      resolve(approved);
-    }
-
-    if (!approved) {
-      this.finishAction(
-        approval.actionId,
-        "rejected",
-        undefined,
-        approval.reason,
-      );
-      return this.getState();
-    }
-
-    this.updateAction(approval.actionId, {
-      status: "running",
-      error: undefined,
-    });
+    resolve?.(resolution);
     this.emit();
     return this.getState();
   }
@@ -829,11 +845,7 @@ export class AgentRuntime {
     return fs.promises
       .mkdir(path.dirname(getRuntimeStatePath()), { recursive: true })
       .then(() =>
-        fs.promises.writeFile(
-          getRuntimeStatePath(),
-          JSON.stringify(persisted, null, 2),
-          "utf-8",
-        ),
+        fs.promises.writeFile(getRuntimeStatePath(), JSON.stringify(persisted, null, 2), "utf-8"),
       )
       .catch((err) => logger.error("Failed to persist runtime state:", err));
   }
@@ -862,6 +874,7 @@ export class AgentRuntime {
     name: string;
     args: Record<string, unknown>;
     tabId?: string | null;
+    runId?: string;
   }): AgentActionEntry {
     const action: AgentActionEntry = {
       id: randomUUID(),
@@ -872,16 +885,14 @@ export class AgentRuntime {
       status: "running",
       startedAt: new Date().toISOString(),
       tabId: input.tabId,
+      runId: input.runId,
     };
     this.state.actions = [...this.state.actions, action].slice(-MAX_ACTIONS);
     this.emit();
     return action;
   }
 
-  private updateAction(
-    actionId: string,
-    patch: Partial<AgentActionEntry>,
-  ): void {
+  private updateAction(actionId: string, patch: Partial<AgentActionEntry>): void {
     this.state.actions = this.state.actions.map((action) =>
       action.id === actionId ? { ...action, ...patch } : action,
     );
@@ -919,9 +930,13 @@ export class AgentRuntime {
     const completed = this.state.actions.filter((a) => a.status === "completed");
     const failed = this.state.actions.filter((a) => a.status === "failed");
     const durations = completed.filter((a) => a.durationMs != null).map((a) => a.durationMs!);
-    const avgDuration = durations.length > 0 ? durations.reduce((s, d) => s + d, 0) / durations.length : 0;
+    const avgDuration =
+      durations.length > 0 ? durations.reduce((s, d) => s + d, 0) / durations.length : 0;
 
-    const toolBreakdown: Record<string, { count: number; totalMs: number; avgMs: number; errors: number }> = {};
+    const toolBreakdown: Record<
+      string,
+      { count: number; totalMs: number; avgMs: number; errors: number }
+    > = {};
     for (const action of this.state.actions) {
       const name = action.name;
       if (!toolBreakdown[name]) toolBreakdown[name] = { count: 0, totalMs: 0, avgMs: 0, errors: 0 };
@@ -939,37 +954,109 @@ export class AgentRuntime {
       failedActions: failed.length,
       averageDurationMs: Math.round(avgDuration),
       toolBreakdown: Object.fromEntries(
-        Object.entries(toolBreakdown).map(([k, v]) => [k, { count: v.count, avgMs: v.avgMs, errors: v.errors }]),
+        Object.entries(toolBreakdown).map(([k, v]) => [
+          k,
+          { count: v.count, avgMs: v.avgMs, errors: v.errors },
+        ]),
       ),
     };
   }
 
-  private getApprovalReason(dangerous: boolean, requiresApproval: boolean): string | null {
+  private getApprovalEvaluation(input: {
+    actionClass: ActionClass;
+    domain: string | null;
+    runId: string | null;
+    dangerous: boolean;
+    requiresApproval: boolean;
+    exactAction: string;
+  }): PolicyEvaluation {
     if (this.state.supervisor.paused) {
-      return "Agent execution is paused";
+      return {
+        decision: "ask",
+        reason: "Agent execution is paused",
+        matchedRuleId: null,
+        scope: "fallback",
+      };
     }
-    if (this.state.supervisor.approvalMode === "auto") {
-      return null;
+    if (this.options.policyManager) {
+      return this.options.policyManager.evaluate(
+        {
+          actionClass: input.actionClass,
+          runId: input.runId ?? undefined,
+          domain: input.domain ?? undefined,
+          actionName: input.exactAction,
+          dangerous: input.dangerous,
+          requiresApproval: input.requiresApproval,
+        },
+        this.state.supervisor.approvalMode,
+      );
     }
-    if (requiresApproval) {
-      return "Approval required: high-risk action";
-    }
+    const reason = this.getApprovalReason(input.dangerous, input.requiresApproval);
+    return {
+      decision: reason ? "ask" : "allow",
+      reason: reason ?? "Allowed by approval mode",
+      matchedRuleId: null,
+      scope: "fallback",
+    };
+  }
+
+  private getApprovalReason(dangerous: boolean, requiresApproval: boolean): string | null {
+    if (this.state.supervisor.approvalMode === "auto") return null;
+    if (requiresApproval) return "Approval required: high-risk action";
     if (this.state.supervisor.approvalMode === "manual") {
       return "Approval required: ask every time mode";
     }
-    if (
-      this.state.supervisor.approvalMode === "confirm-dangerous" &&
-      dangerous
-    ) {
-      return "Approval required: risky action";
+    return dangerous ? "Approval required: risky action" : null;
+  }
+
+  private domainFromUrl(url: string | null): string | null {
+    if (!url) return null;
+    try {
+      return new URL(url).hostname || null;
+    } catch {
+      return null;
     }
-    return null;
+  }
+
+  private persistScopedApproval(
+    resolution: ApprovalResolution,
+    context: {
+      actionClass: ActionClass;
+      runId: string | null;
+      domain: string | null;
+    },
+  ): void {
+    if (!this.options.policyManager) return;
+    if (resolution.decision === "approve-run" && context.runId) {
+      this.options.policyManager.addRule({
+        decision: "allow",
+        actionClass: context.actionClass,
+        scope: "run",
+        runId: context.runId,
+        reason: `Approved for run ${context.runId}`,
+      });
+    }
+    if (resolution.decision === "approve-domain" && context.domain) {
+      this.options.policyManager.addRule({
+        decision: "allow",
+        actionClass: context.actionClass,
+        scope: "domain",
+        domain: context.domain,
+        reason: `Approved for ${context.domain}`,
+      });
+    }
   }
 
   private awaitApproval(
     action: AgentActionEntry,
     reason: string,
-  ): Promise<boolean> {
+    context: {
+      actionClass: ActionClass;
+      domain: string | null;
+      url: string | null;
+      undoable: boolean;
+    },
+  ): Promise<ApprovalResolution> {
     const approval: PendingApproval = {
       id: randomUUID(),
       actionId: action.id,
@@ -978,20 +1065,23 @@ export class AgentRuntime {
       argsSummary: action.argsSummary,
       reason,
       requestedAt: new Date().toISOString(),
+      runId: action.runId ?? null,
+      domain: context.domain,
+      url: context.url,
+      actionClass: context.actionClass,
+      redactedArgs: redactRunValue(action.name, action.args) as Record<string, unknown>,
+      undoable: context.undoable,
     };
 
-    this.state.supervisor.pendingApprovals = [
-      ...this.state.supervisor.pendingApprovals,
-      approval,
-    ];
+    this.state.supervisor.pendingApprovals = [...this.state.supervisor.pendingApprovals, approval];
     this.updateAction(action.id, {
       status: "waiting-approval",
       error: reason,
     });
 
-    return new Promise<boolean>((resolve) => {
-      this.pendingResolvers.set(approval.id, resolve);
-      this.emit();
-    });
+    const { promise, resolve } = Promise.withResolvers<ApprovalResolution>();
+    this.pendingResolvers.set(approval.id, resolve);
+    this.emit();
+    return promise;
   }
 }

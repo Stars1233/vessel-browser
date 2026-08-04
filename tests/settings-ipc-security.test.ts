@@ -88,3 +88,21 @@ test("renderer settings IPC still accepts normal user settings", async () => {
     await flushPersist();
   }
 });
+
+test("renderer settings IPC validates supported history retention periods", async () => {
+  const { handler, event } = registerSettingsIpcForTest();
+  setSetting("telemetryEnabled", false);
+
+  try {
+    const result = await handler(event, "historyRetentionDays", 90);
+    assert.equal(result.historyRetentionDays, 90);
+    await assert.rejects(
+      () => handler(event, "historyRetentionDays", 45),
+      /Invalid historyRetentionDays value/,
+    );
+  } finally {
+    setSetting("historyRetentionDays", 90);
+    setSetting("telemetryEnabled", true);
+    await flushPersist();
+  }
+});
