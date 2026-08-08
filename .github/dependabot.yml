@@ -6,6 +6,11 @@ updates:
     target-branch: dev
     schedule:
       interval: weekly
+    # typescript-eslint 8.66 supports TypeScript >=4.8.4 <6.1.0.
+    # Remove or raise this ceiling once its peer range supports TypeScript 7.
+    ignore:
+      - dependency-name: typescript
+        versions: [">=6.1.0"]
 
   - package-ecosystem: github-actions
     directory: "/"
