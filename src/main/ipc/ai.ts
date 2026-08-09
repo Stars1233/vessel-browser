@@ -16,6 +16,7 @@ import type { TabManager } from "../tabs/tab-manager";
 import type { RunManager } from "../runs/manager";
 import type { ConversationManager } from "../conversations/manager";
 import { buildChatTitlePrompt, normalizeGeneratedChatTitle } from "../conversations/chat-title";
+import { createStreamBatcher } from "../ai/stream-batcher";
 
 // --- Zod schemas for IPC validation ---
 
@@ -55,6 +56,7 @@ let activeChatProvider: AIProvider | null = null;
 let activeManualStream: {
   cancelled: boolean;
   ended: boolean;
+  flush: () => void;
 } | null = null;
 
 function finishManualStream(
@@ -180,7 +182,14 @@ export function registerAIHandlers(
           : null,
         conversationId: conversation.thread.id,
       });
-      const run = { cancelled: false, ended: false };
+      const streamBatcher = createStreamBatcher((chunk) => {
+        sendToRendererViews(Channels.AI_STREAM_CHUNK, chunk);
+      });
+      const run = {
+        cancelled: false,
+        ended: false,
+        flush: streamBatcher.flush,
+      };
       activeManualStream = run;
       sendToRendererViews(Channels.AI_STREAM_START, validatedQuery);
 
@@ -198,12 +207,13 @@ export function registerAIHandlers(
             activeTab?.view.webContents,
             (chunk) => {
               if (!run.cancelled && !run.ended) {
-                sendToRendererViews(Channels.AI_STREAM_CHUNK, chunk);
                 output += chunk;
+                streamBatcher.push(chunk);
               }
             },
             () => {
               if (!run.cancelled) {
+                streamBatcher.flush();
                 finishManualStream(run, sendToRendererViews, "completed");
               }
             },
@@ -216,11 +226,13 @@ export function registerAIHandlers(
         } catch (err: unknown) {
           if (!run.cancelled) {
             const msg = err instanceof Error ? err.message : "Unknown error";
-            sendToRendererViews(Channels.AI_STREAM_CHUNK, `\n[Error: ${msg}]`);
+            streamBatcher.push(`\n[Error: ${msg}]`);
+            streamBatcher.flush();
             failure = msg;
             finishManualStream(run, sendToRendererViews, "failed");
           }
         } finally {
+          streamBatcher.flush();
           if (activeManualStream === run) activeManualStream = null;
           if (activeChatProvider === provider) activeChatProvider = null;
           endAIStream("manual");
@@ -285,6 +297,7 @@ export function registerAIHandlers(
     assertTrustedIpcSender(event);
     if (activeManualStream && !activeManualStream.ended) {
       activeManualStream.cancelled = true;
+      activeManualStream.flush();
       finishManualStream(activeManualStream, sendToRendererViews, "failed");
     }
     activeChatProvider?.cancel();

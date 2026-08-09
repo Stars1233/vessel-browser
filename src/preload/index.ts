@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { BrowserShortcutCommand } from "../shared/browser-shortcuts";
 import { Channels } from "../shared/channels";
 import type {
   AgentCheckpoint,
@@ -389,6 +390,11 @@ const api = {
       return () => ipcRenderer.removeListener(Channels.SIDEBAR_STATE_UPDATE, handler);
     },
     toggleFocusMode: () => ipcRenderer.invoke(Channels.FOCUS_MODE_TOGGLE),
+    onBrowserShortcut: (cb: (command: BrowserShortcutCommand) => void): (() => void) => {
+      const handler = (_: unknown, command: BrowserShortcutCommand) => cb(command);
+      ipcRenderer.on(Channels.BROWSER_SHORTCUT, handler);
+      return () => ipcRenderer.removeListener(Channels.BROWSER_SHORTCUT, handler);
+    },
     setSettingsVisibility: (open: boolean) =>
       ipcRenderer.invoke(Channels.SETTINGS_VISIBILITY, open),
   },

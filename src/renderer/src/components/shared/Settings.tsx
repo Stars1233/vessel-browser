@@ -1,11 +1,4 @@
-import {
-  createEffect,
-  createSignal,
-  Show,
-  onCleanup,
-  onMount,
-  type Component,
-} from "solid-js";
+import { createEffect, createSignal, Show, onCleanup, onMount, type Component } from "solid-js";
 
 import { useUI } from "../../stores/ui";
 import { useAnimatedPresence } from "../../lib/useAnimatedPresence";
@@ -28,6 +21,7 @@ import SettingsVaults from "./SettingsVaults";
 import SettingsPrivacy from "./SettingsPrivacy";
 import SettingsAccount from "./SettingsAccount";
 import { useProviderAuthSetup } from "./useProviderAuthSetup";
+import { useModalFocus } from "../../lib/useModalFocus";
 import { STATUS_MESSAGE_CLEAR_MS } from "../../../../shared/ui-constants";
 import type {
   SettingsCategoryId,
@@ -55,7 +49,10 @@ const logger = createLogger("Settings");
 
 const Settings: Component = () => {
   const { settingsOpen, closeSettings } = useUI();
-  const { visible: settingsVisible, closing: settingsClosing } = useAnimatedPresence(settingsOpen, 200);
+  const { visible: settingsVisible, closing: settingsClosing } = useAnimatedPresence(
+    settingsOpen,
+    200,
+  );
   const [activeCategory, setActiveCategory] = createSignal<SettingsCategoryId>("general");
   let settingsContentEl: HTMLDivElement | undefined;
 
@@ -67,8 +64,7 @@ const Settings: Component = () => {
   };
 
   const [autoRestoreSession, setAutoRestoreSession] = createSignal(true);
-  const [clearBookmarksOnLaunch, setClearBookmarksOnLaunch] =
-    createSignal(false);
+  const [clearBookmarksOnLaunch, setClearBookmarksOnLaunch] = createSignal(false);
   const [obsidianVaultPath, setObsidianVaultPath] = createSignal("");
   const [mcpPort, setMcpPort] = createSignal("3100");
   const [maxToolIterations, setMaxToolIterations] = createSignal("200");
@@ -117,7 +113,10 @@ const Settings: Component = () => {
   const [vaultNewPassword, setVaultNewPassword] = createSignal("");
   const [vaultNewTotp, setVaultNewTotp] = createSignal("");
   const [vaultNewNotes, setVaultNewNotes] = createSignal("");
-  const [vaultMessage, setVaultMessage] = createSignal<{ kind: "success" | "error"; text: string } | null>(null);
+  const [vaultMessage, setVaultMessage] = createSignal<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
 
   // Human Password Manager
   const [humanEntries, setHumanEntries] = createSignal<HumanVaultEntry[]>([]);
@@ -128,7 +127,10 @@ const Settings: Component = () => {
   const [humanNewPassword, setHumanNewPassword] = createSignal("");
   const [humanNewNotes, setHumanNewNotes] = createSignal("");
   const [humanNewCategory, setHumanNewCategory] = createSignal("login");
-  const [humanMessage, setHumanMessage] = createSignal<{ kind: "success" | "error"; text: string } | null>(null);
+  const [humanMessage, setHumanMessage] = createSignal<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const loadHumanEntries = async () => {
     try {
@@ -140,7 +142,12 @@ const Settings: Component = () => {
   };
 
   const handleHumanAdd = async () => {
-    if (!humanNewTitle().trim() || !humanNewUrl().trim() || !humanNewUsername().trim() || !humanNewPassword().trim()) {
+    if (
+      !humanNewTitle().trim() ||
+      !humanNewUrl().trim() ||
+      !humanNewUsername().trim() ||
+      !humanNewPassword().trim()
+    ) {
       setHumanMessage({ kind: "error", text: "Title, URL, username, and password are required." });
       return;
     }
@@ -155,8 +162,12 @@ const Settings: Component = () => {
       });
       setHumanMessage({ kind: "success", text: "Password saved." });
       setHumanAdding(false);
-      setHumanNewTitle(""); setHumanNewUrl(""); setHumanNewUsername("");
-      setHumanNewPassword(""); setHumanNewNotes(""); setHumanNewCategory("login");
+      setHumanNewTitle("");
+      setHumanNewUrl("");
+      setHumanNewUsername("");
+      setHumanNewPassword("");
+      setHumanNewNotes("");
+      setHumanNewCategory("login");
       loadHumanEntries();
     } catch (err) {
       setHumanMessage({
@@ -190,7 +201,10 @@ const Settings: Component = () => {
   const [autofillState, setAutofillState] = createSignal("");
   const [autofillZip, setAutofillZip] = createSignal("");
   const [autofillCountry, setAutofillCountry] = createSignal("");
-  const [autofillMessage, setAutofillMessage] = createSignal<{ kind: "success" | "error"; text: string } | null>(null);
+  const [autofillMessage, setAutofillMessage] = createSignal<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const loadAutofillProfiles = async () => {
     try {
@@ -221,10 +235,18 @@ const Settings: Component = () => {
         postalCode: autofillZip().trim(),
         country: autofillCountry().trim(),
       });
-      setAutofillLabel(""); setAutofillFirstName(""); setAutofillLastName("");
-      setAutofillEmail(""); setAutofillPhone(""); setAutofillOrg("");
-      setAutofillAddr1(""); setAutofillAddr2(""); setAutofillCity("");
-      setAutofillState(""); setAutofillZip(""); setAutofillCountry("");
+      setAutofillLabel("");
+      setAutofillFirstName("");
+      setAutofillLastName("");
+      setAutofillEmail("");
+      setAutofillPhone("");
+      setAutofillOrg("");
+      setAutofillAddr1("");
+      setAutofillAddr2("");
+      setAutofillCity("");
+      setAutofillState("");
+      setAutofillZip("");
+      setAutofillCountry("");
       setAutofillAdding(false);
       setAutofillMessage({ kind: "success", text: "Profile saved." });
       setTimeout(() => setAutofillMessage(null), STATUS_MESSAGE_CLEAR_MS);
@@ -243,7 +265,10 @@ const Settings: Component = () => {
     try {
       const result = await window.vessel.autofill.fill(id);
       if (result.filled > 0) {
-        setAutofillMessage({ kind: "success", text: `Filled ${result.filled} field${result.filled > 1 ? "s" : ""}.` });
+        setAutofillMessage({
+          kind: "success",
+          text: `Filled ${result.filled} field${result.filled > 1 ? "s" : ""}.`,
+        });
       } else {
         setAutofillMessage({ kind: "error", text: "No matching fields found on this page." });
       }
@@ -255,9 +280,7 @@ const Settings: Component = () => {
 
   // First-run detection
   const FIRST_RUN_KEY = "vessel.onboarding.dismissed";
-  const [showWelcome, setShowWelcome] = createSignal(
-    !localStorage.getItem(FIRST_RUN_KEY),
-  );
+  const [showWelcome, setShowWelcome] = createSignal(!localStorage.getItem(FIRST_RUN_KEY));
   const dismissWelcome = () => {
     localStorage.setItem(FIRST_RUN_KEY, "1");
     setShowWelcome(false);
@@ -273,8 +296,16 @@ const Settings: Component = () => {
   };
 
   const handleVaultAdd = async () => {
-    if (!vaultNewLabel().trim() || !vaultNewDomain().trim() || !vaultNewUsername().trim() || !vaultNewPassword().trim()) {
-      setVaultMessage({ kind: "error", text: "Label, domain, username, and password are required." });
+    if (
+      !vaultNewLabel().trim() ||
+      !vaultNewDomain().trim() ||
+      !vaultNewUsername().trim() ||
+      !vaultNewPassword().trim()
+    ) {
+      setVaultMessage({
+        kind: "error",
+        text: "Label, domain, username, and password are required.",
+      });
       return;
     }
     try {
@@ -286,13 +317,20 @@ const Settings: Component = () => {
         totpSecret: vaultNewTotp().trim() || undefined,
         notes: vaultNewNotes().trim() || undefined,
       });
-      setVaultNewLabel(""); setVaultNewDomain(""); setVaultNewUsername("");
-      setVaultNewPassword(""); setVaultNewTotp(""); setVaultNewNotes("");
+      setVaultNewLabel("");
+      setVaultNewDomain("");
+      setVaultNewUsername("");
+      setVaultNewPassword("");
+      setVaultNewTotp("");
+      setVaultNewNotes("");
       setVaultAdding(false);
       setVaultMessage({ kind: "success", text: "Credential added." });
       await loadVaultEntries();
     } catch (err) {
-      setVaultMessage({ kind: "error", text: err instanceof Error ? err.message : "Failed to add credential." });
+      setVaultMessage({
+        kind: "error",
+        text: err instanceof Error ? err.message : "Failed to add credential.",
+      });
     }
   };
 
@@ -333,10 +371,7 @@ const Settings: Component = () => {
   };
 
   const trackPremiumContext = (
-    step:
-      | "settings_banner_viewed"
-      | "settings_banner_clicked"
-      | "welcome_banner_clicked",
+    step: "settings_banner_viewed" | "settings_banner_clicked" | "welcome_banner_clicked",
   ) =>
     window.vessel.premium.trackContext(step).catch((err) => {
       logger.warn("Failed to track premium context:", err);
@@ -346,9 +381,7 @@ const Settings: Component = () => {
     setPremiumLoading(true);
     setPremiumMessage(null);
     try {
-      const result = await window.vessel.premium.checkout(
-        premiumEmail().trim() || undefined,
-      );
+      const result = await window.vessel.premium.checkout(premiumEmail().trim() || undefined);
       if (result.ok) {
         setPremiumMessage({
           kind: "success",
@@ -363,10 +396,7 @@ const Settings: Component = () => {
     } catch (err) {
       setPremiumMessage({
         kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Could not open checkout.",
+        text: err instanceof Error ? err.message : "Could not open checkout.",
       });
     } finally {
       setPremiumLoading(false);
@@ -386,10 +416,10 @@ const Settings: Component = () => {
   const [chatHasStoredApiKey, setChatHasStoredApiKey] = createSignal(false);
   const [chatModel, setChatModel] = createSignal("");
   const [chatBaseUrl, setChatBaseUrl] = createSignal("");
-  const [chatReasoningEffort, setChatReasoningEffort] =
-    createSignal<ReasoningEffortLevel>("off");
+  const [chatReasoningEffort, setChatReasoningEffort] = createSignal<ReasoningEffortLevel>("off");
 
-  const chatProviderMeta = () => CHAT_PROVIDERS.find((p) => p.id === chatProviderId()) ?? CHAT_PROVIDERS[0];
+  const chatProviderMeta = () =>
+    CHAT_PROVIDERS.find((p) => p.id === chatProviderId()) ?? CHAT_PROVIDERS[0];
 
   const providerType = () => chatProviderMeta()?.type;
 
@@ -432,30 +462,33 @@ const Settings: Component = () => {
     }
     setModelFetchState("loading");
     setModelFetchWarning(null);
-    window.vessel.ai.fetchModels({
-      id: chatProviderId(),
-      apiKey: chatApiKey().trim(),
-      model: "",
-      baseUrl: chatBaseUrl().trim() || meta.defaultBaseUrl || undefined,
-    }).then(({ ok, models, warning }) => {
-      if (ok) {
-        setProviderModels(models.sort());
-        if (models.length > 0 && (!chatModel() || !models.includes(chatModel()))) {
-          setChatModel(models[0]);
+    window.vessel.ai
+      .fetchModels({
+        id: chatProviderId(),
+        apiKey: chatApiKey().trim(),
+        model: "",
+        baseUrl: chatBaseUrl().trim() || meta.defaultBaseUrl || undefined,
+      })
+      .then(({ ok, models, warning }) => {
+        if (ok) {
+          setProviderModels(models.sort());
+          if (models.length > 0 && (!chatModel() || !models.includes(chatModel()))) {
+            setChatModel(models[0]);
+          }
+          setModelFetchWarning(warning ?? null);
+          setModelFetchState("idle");
+        } else {
+          setProviderModels([]);
+          setModelFetchWarning(null);
+          setModelFetchState("error");
         }
-        setModelFetchWarning(warning ?? null);
-        setModelFetchState("idle");
-      } else {
+      })
+      .catch((err) => {
+        logger.warn("Failed to fetch provider models:", err);
         setProviderModels([]);
         setModelFetchWarning(null);
         setModelFetchState("error");
-      }
-    }).catch((err) => {
-      logger.warn("Failed to fetch provider models:", err);
-      setProviderModels([]);
-      setModelFetchWarning(null);
-      setModelFetchState("error");
-    });
+      });
   };
 
   // Auto-fetch when provider switches or when api key is filled in
@@ -519,9 +552,7 @@ const Settings: Component = () => {
       setDomainMode("none");
       setDomainList("");
     }
-    setSourceDoNotAllowList(
-      (settings.sourceDoNotAllowList ?? []).join("\n"),
-    );
+    setSourceDoNotAllowList((settings.sourceDoNotAllowList ?? []).join("\n"));
     // Load premium state
     try {
       const ps = await window.vessel.premium.getState();
@@ -581,11 +612,7 @@ const Settings: Component = () => {
   const handleSave = async () => {
     try {
       const parsedPort = Number(mcpPort().trim());
-      if (
-        !Number.isInteger(parsedPort) ||
-        parsedPort < 1 ||
-        parsedPort > 65535
-      ) {
+      if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
         setStatus({
           kind: "error",
           text: "MCP port must be an integer between 1 and 65535.",
@@ -599,37 +626,29 @@ const Settings: Component = () => {
         "defaultUrl",
         defaultUrl().trim() || "https://start.duckduckgo.com",
       );
-      await window.vessel.settings.set(
-        "autoRestoreSession",
-        autoRestoreSession(),
-      );
-      await window.vessel.settings.set(
-        "clearBookmarksOnLaunch",
-        clearBookmarksOnLaunch(),
-      );
-      await window.vessel.settings.set(
-        "obsidianVaultPath",
-        obsidianVaultPath(),
-      );
+      await window.vessel.settings.set("autoRestoreSession", autoRestoreSession());
+      await window.vessel.settings.set("clearBookmarksOnLaunch", clearBookmarksOnLaunch());
+      await window.vessel.settings.set("obsidianVaultPath", obsidianVaultPath());
       await window.vessel.settings.set("mcpPort", parsedPort);
       const parsedIterations = Number(maxToolIterations().trim()) || 200;
       await window.vessel.settings.set(
         "maxToolIterations",
         Math.max(10, Math.min(1000, parsedIterations)),
       );
-      await window.vessel.settings.set(
-        "agentTranscriptMode",
-        agentTranscriptMode(),
-      );
+      await window.vessel.settings.set("agentTranscriptMode", agentTranscriptMode());
       await window.vessel.settings.set("telemetryEnabled", telemetryEnabled());
       await window.vessel.settings.set("defaultSearchEngine", defaultSearchEngine());
       // Save domain policy
-      const domains = domainList().split("\n").map(d => d.trim()).filter(d => d.length > 0);
-      const domainPolicy = domainMode() === "allowlist"
-        ? { allowedDomains: domains, blockedDomains: [] }
-        : domainMode() === "blocklist"
-          ? { allowedDomains: [], blockedDomains: domains }
-          : { allowedDomains: [], blockedDomains: [] };
+      const domains = domainList()
+        .split("\n")
+        .map((d) => d.trim())
+        .filter((d) => d.length > 0);
+      const domainPolicy =
+        domainMode() === "allowlist"
+          ? { allowedDomains: domains, blockedDomains: [] }
+          : domainMode() === "blocklist"
+            ? { allowedDomains: [], blockedDomains: domains }
+            : { allowedDomains: [], blockedDomains: [] };
       await window.vessel.settings.set("domainPolicy", domainPolicy);
       const sourceExclusions = sourceDoNotAllowList()
         .split("\n")
@@ -658,25 +677,33 @@ const Settings: Component = () => {
     } catch (error) {
       setStatus({
         kind: "error",
-        text:
-          error instanceof Error ? error.message : "Failed to save settings.",
+        text: error instanceof Error ? error.message : "Failed to save settings.",
       });
     }
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") closeSettings();
-  };
+  let settingsDialogRef: HTMLDivElement | undefined;
+  useModalFocus(settingsVisible, () => settingsDialogRef, closeSettings);
 
   return (
     <Show when={settingsVisible()}>
-      <div class="command-bar-overlay" classList={{ closing: settingsClosing() }} onClick={closeSettings}>
+      <div
+        class="command-bar-overlay"
+        classList={{ closing: settingsClosing() }}
+        onClick={closeSettings}
+      >
         <div
+          ref={settingsDialogRef}
           class="settings-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-title"
+          tabIndex={-1}
           onClick={(e) => e.stopPropagation()}
-          onKeyDown={handleKeyDown}
         >
-          <h2 class="settings-title">Runtime Settings</h2>
+          <h2 id="settings-title" class="settings-title">
+            Runtime Settings
+          </h2>
 
           <Show when={!premiumActive()}>
             <div class="settings-compact-upsell">
@@ -957,6 +984,8 @@ const Settings: Component = () => {
             {(currentStatus) => (
               <p
                 class="settings-status"
+                role={currentStatus().kind === "error" ? "alert" : "status"}
+                aria-live="polite"
                 classList={{
                   success: currentStatus().kind === "success",
                   error: currentStatus().kind === "error",

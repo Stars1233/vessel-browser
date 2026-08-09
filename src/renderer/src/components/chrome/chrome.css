@@ -2042,13 +2042,24 @@
     color: var(--accent-secondary);
 }
 
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.56);
+}
+
 .downloads-panel {
     width: min(760px, calc(100vw - 48px));
     max-height: min(680px, calc(100vh - 48px));
-    background: var(--bg-panel);
+    background: var(--bg-elevated);
     border: 1px solid var(--border-visible);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-xl);
+    box-shadow: 0 24px 64px var(--shadow-color-strong);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -2074,7 +2085,7 @@
     color: var(--text-primary);
     cursor: pointer;
 }
-.downloads-panel-actions button:hover, .downloads-row-actions button:hover:not(:disabled) { background: var(--bg-hover); }
+.downloads-panel-actions button:hover, .downloads-row-actions button:hover:not(:disabled) { background: var(--surface-hover); }
 .downloads-row-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
 .downloads-panel-list { overflow: auto; padding: 8px; }
 .downloads-row {

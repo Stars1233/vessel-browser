@@ -179,14 +179,19 @@ async function bootstrap(): Promise<void> {
     sendSafe(state.sidebarView.webContents, Channels.HIGHLIGHT_COUNT_UPDATE, count);
     sendSafe(state.devtoolsPanelView.webContents, Channels.HIGHLIGHT_COUNT_UPDATE, count);
   };
+  let lastRenderedActiveTabId = "";
   const windowState = createMainWindow((tabs, activeId, meta) => {
     sendSafe(windowState.chromeView.webContents, Channels.TAB_STATE_UPDATE, tabs, activeId);
-    void syncActiveHighlightCount(windowState);
-    layoutViews(windowState);
+    const activeTabChanged = activeId !== lastRenderedActiveTabId;
+    if (activeTabChanged) {
+      lastRenderedActiveTabId = activeId;
+      void syncActiveHighlightCount(windowState);
+      layoutViews(windowState);
+    }
     if (meta.persistSession) {
       runtime?.onTabStateChanged();
     }
-    if (windowState.uiState.devtoolsPanelMode !== "closed") {
+    if (activeTabChanged && windowState.uiState.devtoolsPanelMode !== "closed") {
       void enableCaptureForTab(windowState.tabManager);
       void refreshDevToolsPageMap(windowState.tabManager);
     }

@@ -13,12 +13,10 @@ import { TAB_GROUP_COLORS } from "../../shared/types";
 import { createLogger } from "../../shared/logger";
 import * as highlightsManager from "../highlights/manager";
 import { highlightOnPage, highlightBatchOnPage } from "../highlights/inject";
-import {
-  captureSelectionHighlight,
-  type HighlightCaptureResult,
-} from "../highlights/capture";
+import { captureSelectionHighlight, type HighlightCaptureResult } from "../highlights/capture";
 import * as historyManager from "../history/manager";
 import { destroySession } from "../devtools/manager";
+import type { BrowserShortcutCommand } from "../../shared/browser-shortcuts";
 
 export type { HighlightCaptureResult };
 
@@ -52,14 +50,8 @@ export class TabManager {
   private tabGroups: Map<string, TabGroup> = new Map();
   private activeTabId: string | null = null;
   private window: BaseWindow;
-  private onStateChange: (
-    tabs: TabState[],
-    activeId: string,
-    meta: TabStateChangeMeta,
-  ) => void;
-  private highlightCaptureCallback:
-    | ((result: HighlightCaptureResult) => void)
-    | null = null;
+  private onStateChange: (tabs: TabState[], activeId: string, meta: TabStateChangeMeta) => void;
+  private highlightCaptureCallback: ((result: HighlightCaptureResult) => void) | null = null;
   private pageLoadCallback: ((url: string, wc: WebContents) => void) | null = null;
   private securityStateCallback: ((tabId: string, state: SecurityState) => void) | null = null;
   private closedTabs: { url: string; title: string; adBlockingEnabled: boolean }[] = [];
@@ -67,21 +59,23 @@ export class TabManager {
   private readonly MAX_CLOSED_TABS = 20;
   readonly isPrivate: boolean;
   private readonly sessionPartition: string | undefined;
+  private readonly onBrowserShortcut: ((command: BrowserShortcutCommand) => void) | undefined;
 
   constructor(
     window: BaseWindow,
-    onStateChange: (
-      tabs: TabState[],
-      activeId: string,
-      meta: TabStateChangeMeta,
-    ) => void,
-    options?: { isPrivate?: boolean; sessionPartition?: string },
+    onStateChange: (tabs: TabState[], activeId: string, meta: TabStateChangeMeta) => void,
+    options?: {
+      isPrivate?: boolean;
+      sessionPartition?: string;
+      onBrowserShortcut?: (command: BrowserShortcutCommand) => void;
+    },
   ) {
     this.window = window;
     this.onStateChange = onStateChange;
     this.isPrivate = options?.isPrivate ?? false;
     this.sessionPartition =
       options?.sessionPartition ?? (this.isPrivate ? "private-mode" : undefined);
+    this.onBrowserShortcut = options?.onBrowserShortcut;
   }
 
   onPageLoad(cb: (url: string, wc: WebContents) => void): void {
@@ -114,11 +108,11 @@ export class TabManager {
       },
       onHighlightSelection: (wc) => this.captureHighlightFromPage(wc),
       onHighlightRemove: (url, text) => this.removeHighlightByText(url, text),
-      onHighlightRecolor: (url, text, color) =>
-        this.recolorHighlightByText(url, text, color),
+      onHighlightRecolor: (url, text, color) => this.recolorHighlightByText(url, text, color),
       onSavePage: () => {
         void this.savePage(id);
       },
+      onBrowserShortcut: this.onBrowserShortcut,
     });
     this.tabs.set(id, tab);
     this.order.push(id);
@@ -187,11 +181,7 @@ export class TabManager {
     }
   }
 
-  navigateTab(
-    id: string,
-    url: string,
-    postBody?: Record<string, string>,
-  ): string | null {
+  navigateTab(id: string, url: string, postBody?: Record<string, string>): string | null {
     const tab = this.tabs.get(id);
     if (!tab) return `No tab with id ${id}`;
     return tab.navigate(url, postBody);
@@ -277,8 +267,7 @@ export class TabManager {
         : TAB_GROUP_COLORS[this.tabGroups.size % TAB_GROUP_COLORS.length];
     this.tabGroups.set(groupId, {
       id: groupId,
-      name:
-        options?.name?.trim() || `Group ${this.tabGroups.size + 1}`,
+      name: options?.name?.trim() || `Group ${this.tabGroups.size + 1}`,
       color,
       collapsed: false,
     });
@@ -348,23 +337,15 @@ export class TabManager {
     return filePath;
   }
 
-  async savePage(
-    id: string,
-    format: "MHTML" | "HTMLComplete" = "MHTML",
-  ): Promise<string | null> {
+  async savePage(id: string, format: "MHTML" | "HTMLComplete" = "MHTML"): Promise<string | null> {
     const tab = this.tabs.get(id);
     if (!tab) return null;
 
     const ext = format === "MHTML" ? "mhtml" : "html";
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: "Save Page As",
-      defaultPath: sanitizeFilename(
-        tab.state.title || "Vessel Page",
-        ext,
-      ),
-      filters: [
-        { name: format === "MHTML" ? "MHTML" : "HTML", extensions: [ext] },
-      ],
+      defaultPath: sanitizeFilename(tab.state.title || "Vessel Page", ext),
+      filters: [{ name: format === "MHTML" ? "MHTML" : "HTML", extensions: [ext] }],
     });
     if (canceled || !filePath) return null;
 
@@ -425,10 +406,7 @@ export class TabManager {
   snapshotSession(note?: string): SessionSnapshot {
     const states = this.getAllStates();
     const activeId = this.getActiveTabId();
-    const activeIndex = Math.max(
-      0,
-      activeId ? this.order.indexOf(activeId) : 0,
-    );
+    const activeIndex = Math.max(0, activeId ? this.order.indexOf(activeId) : 0);
 
     return {
       tabs: states.map((state) => ({
@@ -449,13 +427,8 @@ export class TabManager {
 
   restoreSession(snapshot: SessionSnapshot): string[] {
     const tabs =
-      snapshot.tabs.length > 0
-        ? snapshot.tabs
-        : [{ id: "", url: "about:blank", title: "New Tab" }];
-    const activeIndex = Math.max(
-      0,
-      Math.min(snapshot.activeIndex, tabs.length - 1),
-    );
+      snapshot.tabs.length > 0 ? snapshot.tabs : [{ id: "", url: "about:blank", title: "New Tab" }];
+    const activeIndex = Math.max(0, Math.min(snapshot.activeIndex, tabs.length - 1));
 
     this.destroyAllTabs();
     const restoredGroups = new Map<string, string>();
@@ -565,9 +538,7 @@ export class TabManager {
     }
   }
 
-  onHighlightCapture(
-    callback: ((result: HighlightCaptureResult) => void) | null,
-  ): void {
+  onHighlightCapture(callback: ((result: HighlightCaptureResult) => void) | null): void {
     this.highlightCaptureCallback = callback;
   }
 
@@ -586,8 +557,8 @@ export class TabManager {
       try {
         const result = await captureSelectionHighlight(wc);
         if (result.success && result.text) {
-          await highlightOnPage(wc, null, result.text, undefined, undefined, "yellow").catch((err) =>
-            logger.warn("Failed to capture highlight:", err),
+          await highlightOnPage(wc, null, result.text, undefined, undefined, "yellow").catch(
+            (err) => logger.warn("Failed to capture highlight:", err),
           );
         }
         this.highlightCaptureCallback?.(result);
@@ -628,11 +599,7 @@ export class TabManager {
     });
   }
 
-  private recolorHighlightByText(
-    url: string,
-    text: string,
-    color: HighlightColor,
-  ): void {
+  private recolorHighlightByText(url: string, text: string, color: HighlightColor): void {
     const highlight = highlightsManager.findHighlightByText(url, text);
     if (highlight) {
       highlightsManager.updateHighlightColor(highlight.id, color);
@@ -649,14 +616,7 @@ export class TabManager {
         if (tabUrl === normalized) {
           // Remove old marks for this text, then re-apply with new color
           void this.removeHighlightMarksForText(wc, text).then(() => {
-            void highlightOnPage(
-              wc,
-              null,
-              text,
-              undefined,
-              undefined,
-              color,
-            ).catch((err) =>
+            void highlightOnPage(wc, null, text, undefined, undefined, color).catch((err) =>
               logger.warn("Failed to update highlight color:", err),
             );
           });
@@ -706,10 +666,7 @@ export class TabManager {
     });
   }
 
-  private async removeHighlightMarksForText(
-    wc: WebContents,
-    text: string,
-  ): Promise<void> {
+  private async removeHighlightMarksForText(wc: WebContents, text: string): Promise<void> {
     await wc
       .executeJavaScript(
         `(function() {
@@ -725,16 +682,13 @@ export class TabManager {
         });
       })()`,
       )
-      .catch((err) =>
-        logger.warn("Failed to remove highlight marks:", err),
-      );
+      .catch((err) => logger.warn("Failed to remove highlight marks:", err));
   }
 
   private broadcastState(meta: TabStateChangeMeta = { persistSession: false }): void {
     const states = this.getAllStates();
     const sessionSignature = this.getSessionSignature(states);
-    const persistSession =
-      meta.persistSession || sessionSignature !== this.lastSessionSignature;
+    const persistSession = meta.persistSession || sessionSignature !== this.lastSessionSignature;
     this.lastSessionSignature = sessionSignature;
     this.onStateChange(states, this.activeTabId || "", { persistSession });
     const activeTab = this.getActiveTab();

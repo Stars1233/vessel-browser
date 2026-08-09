@@ -1,5 +1,11 @@
+import {
+  BROWSER_VIEW_SHORTCUTS,
+  type BrowserShortcutSpec,
+} from "../../../shared/browser-shortcuts";
+
 export type BrowserCommandId =
   | "browser-command-palette"
+  | "focus-address"
   | "ask-agent"
   | "toggle-sidebar"
   | "focus-mode"
@@ -45,19 +51,12 @@ export type BrowserCommandIconId =
   | "zoom-in"
   | "zoom-out";
 
-type ShortcutSpec = {
-  key: string;
-  ctrl?: boolean;
-  shift?: boolean;
-  alt?: boolean;
-};
-
 export type BrowserCommandDefinition = {
   id: BrowserCommandId;
   label: string;
   hint: string | ((context: BrowserCommandContext) => string);
   keywords: string;
-  shortcuts?: ShortcutSpec[];
+  shortcuts?: readonly BrowserShortcutSpec[];
   shortcutLabel?: string;
   icon: BrowserCommandIconId;
   privateMode?: boolean;
@@ -86,6 +85,7 @@ export type BrowserCommandContext = {
   goBack: () => void | Promise<void>;
   goForward: () => void | Promise<void>;
   openBrowserCommandPalette: () => void | Promise<void>;
+  focusAddress: () => void | Promise<void>;
   openCommandBar: () => void | Promise<void>;
   toggleSidebar: () => void | Promise<void>;
   toggleFocusMode: () => void | Promise<void>;
@@ -116,12 +116,22 @@ export const BROWSER_COMMAND_DEFINITIONS: readonly BrowserCommandDefinition[] = 
     showInPalette: false,
   },
   {
+    id: "focus-address",
+    label: "Focus Address Bar",
+    hint: "Search or enter a web address",
+    keywords: "address location url search",
+    shortcuts: BROWSER_VIEW_SHORTCUTS["focus-address"].shortcuts,
+    shortcutLabel: BROWSER_VIEW_SHORTCUTS["focus-address"].label,
+    icon: "search",
+    showInPalette: false,
+  },
+  {
     id: "ask-agent",
     label: "Ask Agent",
     hint: "Open the AI command bar",
     keywords: "ai ask chat command bar",
-    shortcuts: [{ ctrl: true, key: "l" }],
-    shortcutLabel: "Ctrl+L",
+    shortcuts: [{ ctrl: true, shift: true, key: "a" }],
+    shortcutLabel: "Ctrl+Shift+A",
     icon: "bot",
     privateMode: false,
   },
@@ -338,11 +348,10 @@ export const BROWSER_COMMAND_DEFINITIONS: readonly BrowserCommandDefinition[] = 
   },
 ];
 
-export function createBrowserCommands(
-  context: BrowserCommandContext,
-): BrowserCommand[] {
+export function createBrowserCommands(context: BrowserCommandContext): BrowserCommand[] {
   const actions: Record<BrowserCommandId, () => void | Promise<void>> = {
     "browser-command-palette": context.openBrowserCommandPalette,
+    "focus-address": context.focusAddress,
     "ask-agent": context.openCommandBar,
     "toggle-sidebar": context.toggleSidebar,
     "focus-mode": context.toggleFocusMode,
@@ -369,38 +378,31 @@ export function createBrowserCommands(
     "capture-highlight": context.captureHighlight,
   };
 
-  return BROWSER_COMMAND_DEFINITIONS.filter(
-    (definition) => definition.showInPalette !== false,
-  ).map((definition) => ({
-    id: definition.id,
-    label: definition.label,
-    hint:
-      typeof definition.hint === "function"
-        ? definition.hint(context)
-        : definition.hint,
-    keywords: definition.keywords,
-    shortcut: definition.shortcutLabel,
-    icon: definition.icon,
-    run: actions[definition.id],
-  }));
+  return BROWSER_COMMAND_DEFINITIONS.filter((definition) => definition.showInPalette !== false).map(
+    (definition) => ({
+      id: definition.id,
+      label: definition.label,
+      hint: typeof definition.hint === "function" ? definition.hint(context) : definition.hint,
+      keywords: definition.keywords,
+      shortcut: definition.shortcutLabel,
+      icon: definition.icon,
+      run: actions[definition.id],
+    }),
+  );
 }
 
 export function getBrowserCommandShortcutHelp(
   privateMode = false,
 ): { keys: string; action: string }[] {
   return BROWSER_COMMAND_DEFINITIONS.filter(
-    (definition) =>
-      definition.shortcutLabel &&
-      (!privateMode || definition.privateMode !== false),
+    (definition) => definition.shortcutLabel && (!privateMode || definition.privateMode !== false),
   ).map((definition) => ({
     keys: definition.shortcutLabel!,
     action: definition.label,
   }));
 }
 
-export function getBrowserCommandIdForKeyboardEvent(
-  event: KeyboardEvent,
-): BrowserCommandId | null {
+export function getBrowserCommandIdForKeyboardEvent(event: KeyboardEvent): BrowserCommandId | null {
   for (const definition of BROWSER_COMMAND_DEFINITIONS) {
     if (!definition.shortcuts) continue;
     if (definition.ignoreEditableTarget && isEditableTarget(event.target)) {
@@ -413,7 +415,7 @@ export function getBrowserCommandIdForKeyboardEvent(
   return null;
 }
 
-function matchesShortcut(event: KeyboardEvent, shortcut: ShortcutSpec): boolean {
+function matchesShortcut(event: KeyboardEvent, shortcut: BrowserShortcutSpec): boolean {
   const ctrl = event.ctrlKey || event.metaKey;
   return (
     ctrl === Boolean(shortcut.ctrl) &&
@@ -427,9 +429,5 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) {
     return false;
   }
-  return (
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.isContentEditable
-  );
+  return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
 }

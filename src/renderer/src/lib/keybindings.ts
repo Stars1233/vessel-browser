@@ -1,10 +1,8 @@
-import {
-  getBrowserCommandIdForKeyboardEvent,
-  type BrowserCommandId,
-} from "./browserCommands";
+import { getBrowserCommandIdForKeyboardEvent, type BrowserCommandId } from "./browserCommands";
 
 interface KeyBindingHandlers {
   openCommandBar?: () => void;
+  focusAddress: () => void;
   openBrowserCommandPalette?: () => void;
   toggleSidebar?: () => void;
   toggleFocusMode?: () => void;
@@ -48,6 +46,7 @@ function getCommandHandler(
 ): (() => void) | undefined {
   const commandHandlers: Partial<Record<BrowserCommandId, () => void>> = {
     "browser-command-palette": handlers.openBrowserCommandPalette,
+    "focus-address": handlers.focusAddress,
     "ask-agent": handlers.openCommandBar,
     "toggle-sidebar": handlers.toggleSidebar,
     "focus-mode": handlers.toggleFocusMode,

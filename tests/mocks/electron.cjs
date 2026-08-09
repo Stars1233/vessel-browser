@@ -77,12 +77,20 @@ function WebContentsView(opts) {
 
 function createMockSession() {
   const cookieStore = [];
-  return {
+  const mockSession = {
     setUserAgent: () => {},
     getUserAgent: () => "Vessel Test",
     setCertificateVerifyProc: () => {},
     webRequest: { onBeforeRequest: () => {} },
     on: () => {},
+    setPermissionCheckHandler: (handler) => {
+      mockSession._permissionCheckHandler = handler;
+    },
+    setPermissionRequestHandler: (handler) => {
+      mockSession._permissionRequestHandler = handler;
+    },
+    _permissionCheckHandler: undefined,
+    _permissionRequestHandler: undefined,
     clearStorageData: () => {
       cookieStore.length = 0;
       return Promise.resolve();
@@ -118,6 +126,7 @@ function createMockSession() {
       },
     },
   };
+  return mockSession;
 }
 
 const defaultSession = createMockSession();
