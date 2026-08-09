@@ -1,6 +1,7 @@
 import { Show, type Component } from "solid-js";
 import { useAnimatedPresence } from "../../lib/useAnimatedPresence";
 import { getBrowserCommandShortcutHelp } from "../../lib/browserCommands";
+import { useModalFocus } from "../../lib/useModalFocus";
 
 interface KeyboardHelpProps {
   open: boolean;
@@ -21,14 +22,34 @@ function shortcutParts(keys: string): string[][] {
 const KeyboardHelp: Component<KeyboardHelpProps> = (props) => {
   const { visible, closing } = useAnimatedPresence(() => props.open, 200);
   const shortcuts = () => getBrowserCommandShortcutHelp(props.privateMode);
+  let dialogRef: HTMLDivElement | undefined;
+  useModalFocus(
+    () => props.open,
+    () => dialogRef,
+    props.onClose,
+  );
 
   return (
     <Show when={visible()}>
       <div class="command-bar-overlay" classList={{ closing: closing() }} onClick={props.onClose}>
-        <div class="keyboard-help" onClick={(e) => e.stopPropagation()}>
+        <div
+          ref={dialogRef}
+          class="keyboard-help"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="keyboard-help-title"
+          tabIndex={-1}
+          onClick={(e) => e.stopPropagation()}
+        >
           <div class="keyboard-help-header">
-            <h2 class="keyboard-help-title">Keyboard Shortcuts</h2>
-            <button class="keyboard-help-close" onClick={props.onClose}>
+            <h2 id="keyboard-help-title" class="keyboard-help-title">
+              Keyboard Shortcuts
+            </h2>
+            <button
+              class="keyboard-help-close"
+              aria-label="Close keyboard shortcuts"
+              onClick={props.onClose}
+            >
               <kbd>Esc</kbd>
             </button>
           </div>
@@ -38,14 +59,10 @@ const KeyboardHelp: Component<KeyboardHelpProps> = (props) => {
                 <div class="keyboard-help-keys">
                   {shortcutParts(s.keys).map((combo, comboIndex) => (
                     <>
-                      {comboIndex > 0 && (
-                        <span class="keyboard-help-plus">/</span>
-                      )}
+                      {comboIndex > 0 && <span class="keyboard-help-plus">/</span>}
                       {combo.map((key, keyIndex) => (
                         <>
-                          {keyIndex > 0 && (
-                            <span class="keyboard-help-plus">+</span>
-                          )}
+                          {keyIndex > 0 && <span class="keyboard-help-plus">+</span>}
                           <kbd>{key}</kbd>
                         </>
                       ))}

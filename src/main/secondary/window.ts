@@ -8,7 +8,7 @@ import { installDownloadHandler, unregisterDownloadHandler } from "../network/do
 import { loadTrustedAppURL } from "../network/url-safety";
 import { TabManager } from "../tabs/tab-manager";
 import { CHROME_HEIGHT } from "../window";
-import { resolveRendererFile } from "../startup/renderer";
+import { installTrustedRendererNavigationPolicy, resolveRendererFile } from "../startup/renderer";
 import { showTabContextMenu, showGroupContextMenu } from "../tabs/tab-context-menu";
 import { createFindInPageBridge } from "../tabs/find-bridge";
 import { sendSafe } from "../ipc/common";
@@ -182,12 +182,23 @@ export function createSecondaryWindow(): SecondaryWindowState {
   chromeView.setBackgroundColor("#1a1a1e");
   win.contentView.addChildView(chromeView);
 
-  const tabManager = new TabManager(win, (tabs, activeId) => {
-    sendSafe(chromeView.webContents, Channels.TAB_STATE_UPDATE, tabs, activeId);
-    layoutSecondaryViews(state);
-  });
+  const tabManager = new TabManager(
+    win,
+    (tabs, activeId) => {
+      sendSafe(chromeView.webContents, Channels.TAB_STATE_UPDATE, tabs, activeId);
+      layoutSecondaryViews(state);
+    },
+    {
+      onBrowserShortcut: (command) => {
+        sendSafe(chromeView.webContents, Channels.BROWSER_SHORTCUT, command);
+      },
+    },
+  );
 
   const state: SecondaryWindowState = { window: win, chromeView, tabManager };
+  installTrustedRendererNavigationPolicy(chromeView.webContents, (url) => {
+    tabManager.createTab(url);
+  });
   installAdBlocking(tabManager);
   installDownloadHandler(chromeView);
   registerSecondaryIpcHandlers(state);

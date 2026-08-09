@@ -21,6 +21,7 @@ import {
   isSidebarAttached,
   type SidebarPanelHostState,
 } from "./sidebar-panel";
+import { installTrustedRendererNavigationPolicy } from "./startup/renderer";
 
 /**
  * Ensure clipboard keyboard shortcuts (Ctrl+C/V/X/A) work in a WebContentsView.
@@ -109,21 +110,14 @@ async function showSidebarContextMenu(
         new MenuItem({
           label: "Remove Current Highlight",
           click: () =>
-            sidebarView.webContents.send(
-              Channels.SIDEBAR_HIGHLIGHT_ACTION,
-              "remove-current",
-            ),
+            sidebarView.webContents.send(Channels.SIDEBAR_HIGHLIGHT_ACTION, "remove-current"),
         }),
       );
     }
     menu.append(
       new MenuItem({
         label: "Clear All Highlights",
-        click: () =>
-          sidebarView.webContents.send(
-            Channels.SIDEBAR_HIGHLIGHT_ACTION,
-            "clear-all",
-          ),
+        click: () => sidebarView.webContents.send(Channels.SIDEBAR_HIGHLIGHT_ACTION, "clear-all"),
       }),
     );
   }
@@ -136,10 +130,7 @@ async function showSidebarContextMenu(
       new MenuItem({
         label: "Add Context to Chat",
         click: () =>
-          sidebarView.webContents.send(
-            Channels.BOOKMARK_ADD_CONTEXT_TO_CHAT,
-            target.bookmarkId,
-          ),
+          sidebarView.webContents.send(Channels.BOOKMARK_ADD_CONTEXT_TO_CHAT, target.bookmarkId),
       }),
     );
   }
@@ -209,11 +200,7 @@ export function getWindowIconPath(): string | undefined {
 }
 
 export function createMainWindow(
-  onTabStateChange: (
-    tabs: TabState[],
-    activeId: string,
-    meta: TabStateChangeMeta,
-  ) => void,
+  onTabStateChange: (tabs: TabState[], activeId: string, meta: TabStateChangeMeta) => void,
 ): WindowState {
   const mainWindow = new BaseWindow({
     width: 1280,
@@ -285,7 +272,17 @@ export function createMainWindow(
     devtoolsPanelDetachedBounds: settings.devtoolsPanelDetachedBounds,
   };
 
-  const tabManager = new TabManager(mainWindow, onTabStateChange);
+  const tabManager = new TabManager(mainWindow, onTabStateChange, {
+    onBrowserShortcut: (command) => {
+      sendSafe(chromeView.webContents, Channels.BROWSER_SHORTCUT, command);
+    },
+  });
+  const openInBrowserTab = (url: string) => {
+    tabManager.createTab(url);
+  };
+  installTrustedRendererNavigationPolicy(chromeView.webContents, openInBrowserTab);
+  installTrustedRendererNavigationPolicy(sidebarView.webContents, openInBrowserTab);
+  installTrustedRendererNavigationPolicy(devtoolsPanelView.webContents, openInBrowserTab);
 
   const sendToRendererViews = (channel: string, ...args: unknown[]) => {
     sendSafe(chromeView.webContents, channel, ...args);
@@ -320,11 +317,7 @@ export function createMainWindow(
   });
   sidebarView.webContents.on("context-menu", (event, params) => {
     event.preventDefault();
-    void showSidebarContextMenu(
-      state.sidebarWindow ?? state.mainWindow,
-      sidebarView,
-      params,
-    );
+    void showSidebarContextMenu(state.sidebarWindow ?? state.mainWindow, sidebarView, params);
   });
   layoutViews(state);
   if (settings.sidebarPanelMode === "detached") {
@@ -335,23 +328,14 @@ export function createMainWindow(
 }
 
 export function layoutViews(state: WindowState): void {
-  const {
-    mainWindow,
-    chromeView,
-    sidebarView,
-    devtoolsPanelView,
-    tabManager,
-    uiState,
-  } = state;
+  const { mainWindow, chromeView, sidebarView, devtoolsPanelView, tabManager, uiState } = state;
   const [width, height] = mainWindow.getContentSize();
   const chromeHeight = uiState.focusMode ? 0 : CHROME_HEIGHT;
   const sidebarAttached = isSidebarAttached(state);
   const sidebarWidth = sidebarAttached ? uiState.sidebarWidth : 0;
   const devtoolsDocked = isDevToolsPanelDocked(state);
   const devtoolsDetached = isDevToolsPanelDetached(state);
-  const devtoolsHeight = devtoolsDocked
-    ? uiState.devtoolsPanelHeight
-    : 0;
+  const devtoolsHeight = devtoolsDocked ? uiState.devtoolsPanelHeight : 0;
   const chromeNeedsFullHeight = uiState.settingsOpen;
 
   if (chromeNeedsFullHeight) {
@@ -413,15 +397,12 @@ export function layoutViews(state: WindowState): void {
  * Only repositions the sidebar, active tab, and devtools panel width.
  */
 export function resizeSidebarViews(state: WindowState): void {
-  const { mainWindow, sidebarView, devtoolsPanelView, tabManager, uiState } =
-    state;
+  const { mainWindow, sidebarView, devtoolsPanelView, tabManager, uiState } = state;
   const [width, height] = mainWindow.getContentSize();
   const chromeHeight = uiState.focusMode ? 0 : CHROME_HEIGHT;
   const sidebarWidth = isSidebarAttached(state) ? uiState.sidebarWidth : 0;
   const devtoolsDocked = isDevToolsPanelDocked(state);
-  const devtoolsHeight = devtoolsDocked
-    ? uiState.devtoolsPanelHeight
-    : 0;
+  const devtoolsHeight = devtoolsDocked ? uiState.devtoolsPanelHeight : 0;
   const contentWidth = width - sidebarWidth;
 
   if (uiState.sidebarPanelMode !== "detached") {
@@ -458,10 +439,7 @@ export function resizeSidebarViews(state: WindowState): void {
  * Lightweight DevTools-only resize — skips view re-stacking and keeps just a
  * narrow transparent capture band above the visible panel during a drag.
  */
-export function resizeDevToolsViews(
-  state: WindowState,
-  capturePointer = false,
-): void {
+export function resizeDevToolsViews(state: WindowState, capturePointer = false): void {
   const { mainWindow, devtoolsPanelView, tabManager, uiState } = state;
   if (!isDevToolsPanelDocked(state)) return;
 
@@ -470,10 +448,7 @@ export function resizeDevToolsViews(
   const sidebarWidth = isSidebarAttached(state) ? uiState.sidebarWidth : 0;
   const contentWidth = width - sidebarWidth;
   const devtoolsHeight = uiState.devtoolsPanelHeight;
-  const availableOverlap = Math.max(
-    0,
-    height - chromeHeight - devtoolsHeight,
-  );
+  const availableOverlap = Math.max(0, height - chromeHeight - devtoolsHeight);
   const resizeOverlap = capturePointer
     ? Math.min(DOCKED_DEVTOOLS_RESIZE_OVERLAP, availableOverlap)
     : 0;

@@ -6,15 +6,15 @@ import { Channels } from "../../shared/channels";
 import { installAdBlockingForSession } from "../network/ad-blocking";
 import { installDownloadHandlerForSession } from "../network/downloads";
 import {
-  clearDownloads,
-  listDownloads,
-  openDownload,
-  showDownloadInFolder,
+  createInMemoryDownloadStore,
+  openDownloadRecord,
+  showDownloadRecordInFolder,
+  type DownloadRecordStore,
 } from "../network/download-manager";
 import { createLogger } from "../../shared/logger";
 import type { TabGroupColor } from "../../shared/types";
 import { CHROME_HEIGHT } from "../window";
-import { resolveRendererFile } from "../startup/renderer";
+import { installTrustedRendererNavigationPolicy, resolveRendererFile } from "../startup/renderer";
 import { loadTrustedAppURL } from "../network/url-safety";
 import { showTabContextMenu, showGroupContextMenu } from "../tabs/tab-context-menu";
 import { createFindInPageBridge } from "../tabs/find-bridge";
@@ -22,6 +22,7 @@ import { assertString, sendSafe } from "../ipc/common";
 import { registerDisabledDevToolsPanelHandlers } from "../devtools/panel";
 import { getRendererSettings } from "../config/settings";
 import { getRuntimeHealth } from "../health/runtime-health";
+import { installPermissionHandlerForSession } from "../security/permissions";
 
 const logger = createLogger("PrivateWindow");
 
@@ -31,6 +32,7 @@ export interface PrivateWindowState {
   tabManager: TabManager;
   session: Session;
   sessionPartition: string;
+  downloads: DownloadRecordStore;
 }
 
 const privateWindows = new Set<PrivateWindowState>();
@@ -172,12 +174,9 @@ function registerPrivateIpcHandlers(state: PrivateWindowState): void {
     return tabManager.toggleGroupCollapsed(groupId);
   });
 
-  ipc.handle(
-    Channels.TAB_GROUP_SET_COLOR,
-    (_e, groupId: string, color: TabGroupColor) => {
-      tabManager.setGroupColor(groupId, color);
-    },
-  );
+  ipc.handle(Channels.TAB_GROUP_SET_COLOR, (_e, groupId: string, color: TabGroupColor) => {
+    tabManager.setGroupColor(groupId, color);
+  });
 
   ipc.handle(Channels.TAB_TOGGLE_MUTE, (_e, id: string) => {
     return tabManager.toggleMuted(id);
@@ -206,18 +205,18 @@ function registerPrivateIpcHandlers(state: PrivateWindowState): void {
   // windows intentionally do not receive the full trusted-renderer IPC set.
   ipc.handle(Channels.SETTINGS_GET, () => getRendererSettings());
   ipc.handle(Channels.SETTINGS_HEALTH_GET, () => getRuntimeHealth());
-  ipc.handle(Channels.DOWNLOADS_GET, () => listDownloads());
+  ipc.handle(Channels.DOWNLOADS_GET, () => state.downloads.list());
   ipc.handle(Channels.DOWNLOADS_CLEAR, () => {
-    clearDownloads();
+    state.downloads.clear();
     return true;
   });
   ipc.handle(Channels.DOWNLOADS_OPEN, (_e, id: unknown) => {
     assertString(id, "download id");
-    return openDownload(id);
+    return openDownloadRecord(state.downloads.get(id));
   });
   ipc.handle(Channels.DOWNLOADS_SHOW_IN_FOLDER, (_e, id: unknown) => {
     assertString(id, "download id");
-    return showDownloadInFolder(id);
+    return showDownloadRecordInFolder(state.downloads.get(id));
   });
 
   ipc.handle(Channels.OPEN_PRIVATE_WINDOW, () => {
@@ -306,12 +305,11 @@ export function createPrivateWindow(): PrivateWindowState {
       logger.warn("Failed to close private chrome renderer:", cleanupError);
     }
 
-    void Promise.all([
-      privateSession.clearStorageData(),
-      privateSession.clearCache(),
-    ]).catch((cleanupError) => {
-      logger.warn("Failed to clear private browsing session:", cleanupError);
-    });
+    void Promise.all([privateSession.clearStorageData(), privateSession.clearCache()]).catch(
+      (cleanupError) => {
+        logger.warn("Failed to clear private browsing session:", cleanupError);
+      },
+    );
   };
 
   try {
@@ -347,21 +345,34 @@ export function createPrivateWindow(): PrivateWindowState {
         sendSafe(chromeView.webContents, Channels.TAB_STATE_UPDATE, tabs, activeId);
         if (state) layoutPrivateViews(state);
       },
-      { isPrivate: true, sessionPartition: privateSessionPartition },
+      {
+        isPrivate: true,
+        sessionPartition: privateSessionPartition,
+        onBrowserShortcut: (command) => {
+          sendSafe(chromeView.webContents, Channels.BROWSER_SHORTCUT, command);
+        },
+      },
     );
 
+    const privateDownloads = createInMemoryDownloadStore();
+    installDownloadHandlerForSession(privateSession, chromeView, privateDownloads);
     state = {
       window: win,
       chromeView,
       tabManager,
       session: privateSession,
       sessionPartition: privateSessionPartition,
+      downloads: privateDownloads,
     };
+    installTrustedRendererNavigationPolicy(chromeView.webContents, (url) => {
+      tabManager?.createTab(url);
+    });
 
     // Install ad-blocking on the private session
     installAdBlockingForSession(privateSession, tabManager);
-    installDownloadHandlerForSession(privateSession, chromeView);
-
+    installPermissionHandlerForSession(privateSession, {
+      persistDecisions: false,
+    });
     registerPrivateIpcHandlers(state);
 
     win.on("resize", () => {

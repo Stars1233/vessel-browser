@@ -5,9 +5,16 @@ import type { TabGroupColor, TabState } from "../../../../shared/types";
 import { useNow } from "../../stores/clock";
 import { useRuntime } from "../../stores/runtime";
 import { getAgentActiveTabIds } from "../../lib/agentActivity";
+import { resolveTabNavigationIndex, type TabNavigationIntent } from "../../lib/tab-navigation";
 import "./chrome.css";
 
 const TAB_CLOSE_MS = 200;
+const TAB_NAVIGATION_BY_KEY: Readonly<Record<string, TabNavigationIntent>> = {
+  ArrowLeft: "previous",
+  ArrowRight: "next",
+  Home: "first",
+  End: "last",
+};
 
 /** Generate a stable hue from a string (URL or title) for the avatar background. */
 function stringToHue(str: string): number {
@@ -23,7 +30,11 @@ const TabFavicon = (props: { favicon?: string; title: string; url: string }) => 
   const letter = () => {
     const t = props.title?.trim();
     if (t && t !== "New Tab") return t[0].toUpperCase();
-    try { return new URL(props.url).hostname[0]?.toUpperCase() || "?"; } catch { return "?"; }
+    try {
+      return new URL(props.url).hostname[0]?.toUpperCase() || "?";
+    } catch {
+      return "?";
+    }
   };
   const hue = () => stringToHue(props.url || props.title || "");
 
@@ -31,20 +42,12 @@ const TabFavicon = (props: { favicon?: string; title: string; url: string }) => 
     <Show
       when={props.favicon && !failed()}
       fallback={
-        <span
-          class="tab-favicon-fallback"
-          style={{ "--favicon-hue": `${hue()}` }}
-        >
+        <span class="tab-favicon-fallback" style={{ "--favicon-hue": `${hue()}` }}>
           {letter()}
         </span>
       }
     >
-      <img
-        class="tab-favicon"
-        src={props.favicon}
-        alt=""
-        onError={() => setFailed(true)}
-      />
+      <img class="tab-favicon" src={props.favicon} alt="" onError={() => setFailed(true)} />
     </Show>
   );
 };
@@ -75,9 +78,7 @@ const TabBar: Component = () => {
   const now = useNow();
   const [closingTabIds, setClosingTabIds] = createSignal<Set<string>>(new Set());
 
-  const modelActiveTabIds = createMemo(() =>
-    getAgentActiveTabIds(runtimeState(), now()),
-  );
+  const modelActiveTabIds = createMemo(() => getAgentActiveTabIds(runtimeState(), now()));
 
   const tabEntries = createMemo<TabBarEntry[]>(() => {
     const groupCounts = new Map<string, number>();
@@ -120,9 +121,34 @@ const TabBar: Component = () => {
     }, TAB_CLOSE_MS);
   };
 
+  const focusTab = (currentId: string, intent: TabNavigationIntent) => {
+    const visibleTabs = tabEntries()
+      .filter((entry): entry is Extract<TabBarEntry, { type: "tab" }> => entry.type === "tab")
+      .map((entry) => entry.tab);
+    const currentIndex = visibleTabs.findIndex((tab) => tab.id === currentId);
+    const nextIndex = resolveTabNavigationIndex(currentIndex, visibleTabs.length, intent);
+    if (nextIndex == null) return;
+    const nextTab = visibleTabs[nextIndex];
+    switchTab(nextTab.id);
+    document.getElementById(`browser-tab-${nextTab.id}`)?.focus();
+  };
+
+  const handleTabKeyDown = (event: KeyboardEvent, tabId: string) => {
+    const navigationIntent = TAB_NAVIGATION_BY_KEY[event.key];
+    if (navigationIntent) {
+      event.preventDefault();
+      focusTab(tabId, navigationIntent);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      switchTab(tabId);
+    }
+  };
+
   return (
     <div class="tab-bar">
-      <div class="tab-list">
+      <div class="tab-list" role="tablist" aria-label="Browser tabs">
         <For each={tabEntries()}>
           {(entry) => (
             <Show
@@ -146,103 +172,140 @@ const TabBar: Component = () => {
                 )
               }
             >
-              {entry.type === "tab" && (() => {
-                const tab = entry.tab;
-                return (
-            <div
-              class={`tab-item ${tab.isPinned ? "pinned" : ""} ${tab.id === activeTabId() ? "active" : ""} ${
-                modelActiveTabIds().has(tab.id) ? "model-active" : ""
-              } ${tab.groupId ? `group-${tab.groupColor || "blue"}` : ""}`}
-              classList={{ closing: closingTabIds().has(tab.id) }}
-              onClick={() => switchTab(tab.id)}
-              onAuxClick={(e) => {
-                if (e.button === 1 && !tab.isPinned) handleClose(tab.id);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                window.vessel.tabs.showContextMenu(tab.id);
-              }}
-              title={
-                tab.isPinned
-                  ? tab.title || tab.url
-                  : modelActiveTabIds().has(tab.id)
-                    ? `${tab.title || "New Tab"} • Agent active`
-                    : tab.title
-              }
-              role="tab"
-            >
-              <TabFavicon favicon={tab.favicon} title={tab.title || "New Tab"} url={tab.url} />
-              <Show when={tab.isPinned && (tab.isAudible || tab.isMuted)}>
-                <button
-                  class="tab-audio tab-audio-pinned"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void toggleMute(tab.id);
-                  }}
-                  title={tab.isMuted ? "Unmute tab" : "Mute tab"}
-                >
-                  <Show when={tab.isMuted} fallback={<Volume2 size={11} />}>
-                    <VolumeX size={11} />
-                  </Show>
-                </button>
-              </Show>
-              {!tab.isPinned && (
-                <>
-                  {modelActiveTabIds().has(tab.id) && (
-                    <span
-                      class="tab-agent-indicator"
-                      aria-hidden="true"
-                      title="Agent active on this tab"
-                    />
-                  )}
-                  <span class="tab-title">{tab.title || "New Tab"}</span>
-                  <Show when={tab.isAudible || tab.isMuted}>
-                    <button
-                      class="tab-audio"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void toggleMute(tab.id);
+              {entry.type === "tab" &&
+                (() => {
+                  const tab = entry.tab;
+                  return (
+                    <div
+                      id={`browser-tab-${tab.id}`}
+                      class={`tab-item ${tab.isPinned ? "pinned" : ""} ${tab.id === activeTabId() ? "active" : ""} ${
+                        modelActiveTabIds().has(tab.id) ? "model-active" : ""
+                      } ${tab.groupId ? `group-${tab.groupColor || "blue"}` : ""}`}
+                      classList={{ closing: closingTabIds().has(tab.id) }}
+                      onClick={() => switchTab(tab.id)}
+                      onAuxClick={(e) => {
+                        if (e.button === 1 && !tab.isPinned) handleClose(tab.id);
                       }}
-                      title={tab.isMuted ? "Unmute tab" : "Mute tab"}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        window.vessel.tabs.showContextMenu(tab.id);
+                      }}
+                      title={
+                        tab.isPinned
+                          ? tab.title || tab.url
+                          : modelActiveTabIds().has(tab.id)
+                            ? `${tab.title || "New Tab"} • Agent active`
+                            : tab.title
+                      }
+                      role="tab"
+                      aria-selected={tab.id === activeTabId()}
+                      aria-label={tab.title || tab.url || "New Tab"}
+                      tabIndex={tab.id === activeTabId() ? 0 : -1}
+                      onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                     >
-                      <Show when={tab.isMuted} fallback={<Volume2 size={12} />}>
-                        <VolumeX size={12} />
+                      <TabFavicon
+                        favicon={tab.favicon}
+                        title={tab.title || "New Tab"}
+                        url={tab.url}
+                      />
+                      <Show when={tab.isPinned && (tab.isAudible || tab.isMuted)}>
+                        <button
+                          class="tab-audio tab-audio-pinned"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void toggleMute(tab.id);
+                          }}
+                          title={tab.isMuted ? "Unmute tab" : "Mute tab"}
+                          aria-label={tab.isMuted ? `Unmute ${tab.title}` : `Mute ${tab.title}`}
+                        >
+                          <Show when={tab.isMuted} fallback={<Volume2 size={11} />}>
+                            <VolumeX size={11} />
+                          </Show>
+                        </button>
                       </Show>
-                    </button>
-                  </Show>
-                  {tab.isLoading && <span class="tab-loading" />}
-                  <button
-                    class="tab-close"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleClose(tab.id);
-                    }}
-                  >
-                    ×
-                  </button>
-                </>
-              )}
-            </div>
-                );
-              })()}
+                      {!tab.isPinned && (
+                        <>
+                          {modelActiveTabIds().has(tab.id) && (
+                            <span
+                              class="tab-agent-indicator"
+                              aria-hidden="true"
+                              title="Agent active on this tab"
+                            />
+                          )}
+                          <span class="tab-title">{tab.title || "New Tab"}</span>
+                          <Show when={tab.isAudible || tab.isMuted}>
+                            <button
+                              class="tab-audio"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void toggleMute(tab.id);
+                              }}
+                              title={tab.isMuted ? "Unmute tab" : "Mute tab"}
+                              aria-label={tab.isMuted ? `Unmute ${tab.title}` : `Mute ${tab.title}`}
+                            >
+                              <Show when={tab.isMuted} fallback={<Volume2 size={12} />}>
+                                <VolumeX size={12} />
+                              </Show>
+                            </button>
+                          </Show>
+                          {tab.isLoading && <span class="tab-loading" />}
+                          <button
+                            class="tab-close"
+                            aria-label={`Close ${tab.title || "tab"}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleClose(tab.id);
+                            }}
+                          >
+                            ×
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
             </Show>
           )}
         </For>
       </div>
       <div class="tab-actions">
-        <button class="tab-new" onClick={() => window.vessel.tabs.openNewWindow()} data-tooltip="New window" data-tooltip-pos="left">
+        <button
+          class="tab-new"
+          aria-label="New window"
+          onClick={() => window.vessel.tabs.openNewWindow()}
+          data-tooltip="New window"
+          data-tooltip-pos="left"
+        >
           <PanelTop size={14} />
         </button>
-        <button class="tab-new" onClick={() => {
-          const id = activeTabId();
-          if (id) void createGroup(id);
-        }} data-tooltip="Add active tab to group" data-tooltip-pos="left">
+        <button
+          class="tab-new"
+          aria-label="Add active tab to group"
+          onClick={() => {
+            const id = activeTabId();
+            if (id) void createGroup(id);
+          }}
+          data-tooltip="Add active tab to group"
+          data-tooltip-pos="left"
+        >
           <LayersPlus size={14} />
         </button>
-        <button class="tab-new" onClick={() => createTab()} data-tooltip="New tab" data-tooltip-pos="left">
+        <button
+          class="tab-new"
+          aria-label="New tab"
+          onClick={() => createTab()}
+          data-tooltip="New tab"
+          data-tooltip-pos="left"
+        >
           <Plus size={15} />
         </button>
-        <button class="tab-new tab-new-private" onClick={() => window.vessel.tabs.openPrivateWindow()} data-tooltip="Private window" data-tooltip-pos="left">
+        <button
+          class="tab-new tab-new-private"
+          aria-label="New private window"
+          onClick={() => window.vessel.tabs.openPrivateWindow()}
+          data-tooltip="Private window"
+          data-tooltip-pos="left"
+        >
           <VenetianMask size={12} />
         </button>
       </div>

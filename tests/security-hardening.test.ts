@@ -11,32 +11,14 @@ import {
   isManagedTabIpcSender,
   registerTrustedIpcSender,
 } from "../src/main/ipc/common";
-import {
-  loadInternalDataURL,
-  loadTrustedAppURL,
-} from "../src/main/network/url-safety";
-import {
-  resolveDownloadPath,
-  sanitizeDownloadFilename,
-} from "../src/main/network/downloads";
+import { loadInternalDataURL, loadTrustedAppURL } from "../src/main/network/url-safety";
+import { resolveDownloadPath, sanitizeDownloadFilename } from "../src/main/network/downloads";
 import { openExternalAllowlisted } from "../src/main/security/external-open";
-import {
-  getAirGapBlockReason,
-  isLocalBaseUrl,
-} from "../src/main/config/air-gapped";
-import {
-  CodexProvider,
-  createCodexFunctionCallOutput,
-} from "../src/main/ai/provider-codex";
+import { getAirGapBlockReason, isLocalBaseUrl } from "../src/main/config/air-gapped";
+import { CodexProvider, createCodexFunctionCallOutput } from "../src/main/ai/provider-codex";
 import { flushPersist, setSetting } from "../src/main/config/settings";
-import {
-  createDebouncedJsonPersistence,
-  loadJsonFile,
-} from "../src/main/persistence/json-file";
-import {
-  getNamedSession,
-  saveNamedSession,
-} from "../src/main/sessions/manager";
+import { createDebouncedJsonPersistence, loadJsonFile } from "../src/main/persistence/json-file";
+import { getNamedSession, saveNamedSession } from "../src/main/sessions/manager";
 import { requiresExplicitMcpApproval } from "../src/main/mcp/server";
 import {
   assertFeatureUnlocked,
@@ -46,11 +28,12 @@ import {
   verifyActivationCode,
 } from "../src/main/premium/manager";
 import { openUpdateDownload } from "../src/main/updates/checker";
-import {
-  getPrivateWindows,
-  openPrivateWindowSafely,
-} from "../src/main/private/window";
+import { getPrivateWindows, openPrivateWindowSafely } from "../src/main/private/window";
 import { createSecondaryWindow } from "../src/main/secondary/window";
+import {
+  installTrustedRendererNavigationPolicy,
+  isTrustedRendererUrl,
+} from "../src/main/startup/renderer";
 import { sanitizeTelemetryProperties } from "../src/main/telemetry/posthog";
 import {
   decodeEncryptionKeyFromStorage,
@@ -59,11 +42,7 @@ import {
   normalizeCredentialHost,
 } from "../src/main/vault/shared";
 import type { TabManager } from "../src/main/tabs/tab-manager";
-import type {
-  NamedSessionData,
-  PremiumState,
-  PremiumStatus,
-} from "../src/shared/types";
+import type { NamedSessionData, PremiumState, PremiumStatus } from "../src/shared/types";
 import { Channels } from "../src/shared/channels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -72,10 +51,7 @@ const mockSafeStorage = safeStorage as typeof safeStorage & {
   __setEncryptionAvailable?: (value: boolean) => void;
 };
 
-function setPremiumStatusForTest(
-  status: PremiumStatus,
-  validatedAt: string,
-): void {
+function setPremiumStatusForTest(status: PremiumStatus, validatedAt: string): void {
   const state: PremiumState = {
     status,
     customerId: status === "free" ? "" : "cus_test",
@@ -115,10 +91,7 @@ function setSafeStorageAvailabilityForTest(value: boolean): void {
 }
 
 async function withMockFetch<T>(
-  handler: (
-    input: RequestInfo | URL,
-    init?: RequestInit,
-  ) => Response | Promise<Response>,
+  handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>,
   fn: () => Promise<T>,
 ): Promise<T> {
   const originalFetch = globalThis.fetch;
@@ -143,10 +116,7 @@ function withAirGappedForTest<T>(value: boolean, fn: () => T): T {
 
   try {
     const result = fn();
-    if (
-      result &&
-      typeof (result as Promise<unknown>).finally === "function"
-    ) {
+    if (result && typeof (result as Promise<unknown>).finally === "function") {
       return (result as Promise<unknown>).finally(restore) as T;
     }
     restore();
@@ -161,16 +131,13 @@ function codexSseResponse(
   events: Array<Record<string, unknown>>,
   headers: Record<string, string> = {},
 ): Response {
-  return new Response(
-    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
-    {
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream",
-        ...headers,
-      },
+  return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      ...headers,
     },
-  );
+  });
 }
 
 test("private window launch is contained on setup failure", () => {
@@ -208,8 +175,7 @@ test("private window launch succeeds with scoped chrome IPC", () => {
   );
   assert.ok(openedWindow);
   assert.equal(
-    (openedWindow.chromeView as unknown as { _backgroundColor?: string })
-      ._backgroundColor,
+    (openedWindow.chromeView as unknown as { _backgroundColor?: string })._backgroundColor,
     "#1a1a1e",
   );
   assert.throws(
@@ -229,17 +195,72 @@ test("private window launch succeeds with scoped chrome IPC", () => {
   assert.equal(typeof privateHandlers.get(Channels.SETTINGS_HEALTH_GET), "function");
   assert.doesNotThrow(() => privateHandlers.get(Channels.SETTINGS_GET)?.({}));
   assert.ok(Array.isArray(privateHandlers.get(Channels.DOWNLOADS_GET)?.({})));
+  assert.equal(
+    typeof (openedWindow.session as unknown as { _permissionCheckHandler?: unknown })
+      ._permissionCheckHandler,
+    "function",
+  );
+  assert.equal(
+    typeof (openedWindow.session as unknown as { _permissionRequestHandler?: unknown })
+      ._permissionRequestHandler,
+    "function",
+  );
 
   openedWindow.window.close();
   assert.equal(getPrivateWindows().size, beforeCount);
+});
+
+test("privileged renderer navigation stays on the application URL", () => {
+  const originalRendererUrl = process.env.ELECTRON_RENDERER_URL;
+  process.env.ELECTRON_RENDERER_URL = "http://localhost:5173/index.html";
+  try {
+    assert.equal(isTrustedRendererUrl("http://localhost:5173/index.html?view=chrome"), true);
+    assert.equal(isTrustedRendererUrl("https://example.com/index.html"), false);
+
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    let openHandler: ((details: { url: string }) => { action: string }) | undefined;
+    const opened: string[] = [];
+    installTrustedRendererNavigationPolicy(
+      {
+        setWindowOpenHandler: (handler: typeof openHandler) => {
+          openHandler = handler;
+        },
+        on: (event: string, handler: (...args: unknown[]) => void) => {
+          listeners.set(event, handler);
+        },
+      } as never,
+      (url) => opened.push(url),
+    );
+
+    assert.deepEqual(openHandler?.({ url: "https://example.com/docs" }), {
+      action: "deny",
+    });
+    assert.deepEqual(opened, ["https://example.com/docs"]);
+
+    let prevented = false;
+    listeners.get("will-navigate")?.(
+      {
+        preventDefault: () => {
+          prevented = true;
+        },
+      },
+      "https://example.com/remote",
+    );
+    assert.equal(prevented, true);
+  } finally {
+    if (originalRendererUrl === undefined) {
+      delete process.env.ELECTRON_RENDERER_URL;
+    } else {
+      process.env.ELECTRON_RENDERER_URL = originalRendererUrl;
+    }
+  }
 });
 
 test("secondary windows use an opaque chrome surface", () => {
   const secondaryWindow = createSecondaryWindow();
 
   assert.equal(
-    (secondaryWindow.chromeView as unknown as { _backgroundColor?: string })
-      ._backgroundColor,
+    (secondaryWindow.chromeView as unknown as { _backgroundColor?: string })._backgroundColor,
     "#1a1a1e",
   );
 
@@ -272,22 +293,39 @@ test("trusted IPC guard rejects unregistered renderer senders", () => {
 });
 
 test("trusted IPC guard accepts registered app UI senders", () => {
-  registerTrustedIpcSender({ id: 42, once: () => undefined } as never);
-  assert.doesNotThrow(() => assertTrustedIpcSender({ sender: { id: 42 } } as never));
+  registerTrustedIpcSender(
+    { id: 42, once: () => undefined } as never,
+    (url) => url === "file:///app/index.html",
+  );
+  assert.doesNotThrow(() =>
+    assertTrustedIpcSender({
+      sender: { id: 42, getURL: () => "file:///app/index.html" },
+      senderFrame: { url: "file:///app/index.html" },
+    } as never),
+  );
+  assert.throws(
+    () =>
+      assertTrustedIpcSender({
+        sender: { id: 42, getURL: () => "file:///app/index.html" },
+      } as never),
+    /untrusted renderer/,
+  );
+  assert.throws(
+    () =>
+      assertTrustedIpcSender({
+        sender: { id: 42, getURL: () => "https://example.com" },
+        senderFrame: { url: "https://example.com" },
+      } as never),
+    /untrusted renderer/,
+  );
 });
 
 test("managed tab IPC helper rejects unknown webContents senders", () => {
   const tabManager = {
     findTabByWebContentsId: (id: number) => (id === 7 ? { id: "tab" } : undefined),
   };
-  assert.equal(
-    isManagedTabIpcSender({ sender: { id: 7 } } as never, tabManager),
-    true,
-  );
-  assert.equal(
-    isManagedTabIpcSender({ sender: { id: 8 } } as never, tabManager),
-    false,
-  );
+  assert.equal(isManagedTabIpcSender({ sender: { id: 7 } } as never, tabManager), true);
+  assert.equal(isManagedTabIpcSender({ sender: { id: 8 } } as never, tabManager), false);
 });
 
 test("credential host normalization removes scheme and www prefix", () => {
@@ -327,18 +365,12 @@ test("named sessions persist encrypted envelopes and migrate legacy plaintext", 
         sameSite: "lax",
       },
     ],
-    localStorage: [
-      { origin: "https://example.com", entries: { token: "local-token" } },
-    ],
+    localStorage: [{ origin: "https://example.com", entries: { token: "local-token" } }],
     snapshot: { tabs: [], activeIndex: 0, capturedAt: "2026-01-01T00:00:00.000Z" },
   };
 
   fs.mkdirSync(sessionsDir, { recursive: true });
-  fs.writeFileSync(
-    namedSessionPath("alpha"),
-    JSON.stringify({ version: 1, ...legacy }),
-    "utf-8",
-  );
+  fs.writeFileSync(namedSessionPath("alpha"), JSON.stringify({ version: 1, ...legacy }), "utf-8");
 
   const loaded = await getNamedSession("alpha");
   assert.equal(loaded?.cookies[0]?.value, "session-token");
@@ -397,6 +429,67 @@ test("secure JSON persistence fails closed without OS secret storage", async (t)
   assert.equal(fs.existsSync(filePath), false);
 });
 
+test("secure JSON persistence retries the same snapshot after storage recovers", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vessel-secure-retry-"));
+  const filePath = path.join(dir, "secure.json");
+  t.after(() => {
+    setSafeStorageAvailabilityForTest(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const persist = createDebouncedJsonPersistence({
+    debounceMs: 10,
+    filePath,
+    getValue: () => ({ secret: "retry-me" }),
+    logLabel: "secure persistence retry test",
+    secure: true,
+  });
+
+  setSafeStorageAvailabilityForTest(false);
+  await assert.rejects(
+    () => persist.persistNow(),
+    /Secure persistence requires OS-backed secret storage/,
+  );
+
+  setSafeStorageAvailabilityForTest(true);
+  await persist.persistNow();
+  assert.deepEqual(
+    loadJsonFile({
+      filePath,
+      fallback: { secret: "missing" },
+      parse: (raw) => raw as { secret: string },
+      secure: true,
+    }),
+    { secret: "retry-me" },
+  );
+});
+
+test("JSON persistence serializes snapshots and leaves no temporary files", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vessel-json-persist-"));
+  const filePath = path.join(dir, "state.json");
+  let value = { revision: 1 };
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const persist = createDebouncedJsonPersistence({
+    debounceMs: 10,
+    filePath,
+    getValue: () => value,
+    logLabel: "serialized persistence test",
+  });
+  const first = persist.persistNow();
+  value = { revision: 2 };
+  const second = persist.persistNow();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath, "utf-8")), {
+    revision: 2,
+  });
+  assert.deepEqual(
+    fs.readdirSync(dir).filter((name) => name.includes(".tmp.")),
+    [],
+  );
+});
+
 test("external opener blocks unexpected schemes and hosts", async () => {
   await assert.rejects(
     openExternalAllowlisted("javascript:alert(1)", { hosts: ["github.com"] }),
@@ -414,7 +507,11 @@ test("external opener blocks unexpected schemes and hosts", async () => {
 
 test("trusted app URL loader only permits file and localhost URLs", async () => {
   const loaded: string[] = [];
-  const wc = { loadURL: async (url: string) => { loaded.push(url); } } as never;
+  const wc = {
+    loadURL: async (url: string) => {
+      loaded.push(url);
+    },
+  } as never;
 
   await loadTrustedAppURL(wc, "http://localhost:5173/?view=chrome");
   assert.deepEqual(loaded, ["http://localhost:5173/?view=chrome"]);
@@ -460,11 +557,7 @@ test("air-gapped mode blocks secondary outbound actions", async () => {
         throw new Error("Activation API should not be called in air-gapped mode");
       },
       async () => {
-        const result = await verifyActivationCode(
-          "premium@example.com",
-          "123456",
-          "challenge",
-        );
+        const result = await verifyActivationCode("premium@example.com", "123456", "challenge");
         assert.equal(result.ok, false);
         assert.match(result.error || "", /air-gapped mode/);
       },
@@ -568,10 +661,7 @@ test("premium assertions block gated tools and features for free users", async (
       "memory_note_search",
       "memory_page_capture",
     ]) {
-      assert.throws(
-        () => assertToolUnlocked(toolName),
-        /requires Vessel Premium/,
-      );
+      assert.throws(() => assertToolUnlocked(toolName), /requires Vessel Premium/);
     }
 
     assert.throws(
@@ -606,21 +696,11 @@ test("premium assertions allow gated tools and features for active premium users
     setPremiumStatusForTest("active", new Date().toISOString());
 
     assert.doesNotThrow(() => assertToolUnlocked("screenshot"));
-    assert.doesNotThrow(() =>
-      assertFeatureUnlocked("vault", "Agent Credential Vault"),
-    );
-    assert.doesNotThrow(() =>
-      assertFeatureUnlocked("human_vault", "Passwords"),
-    );
-    assert.doesNotThrow(() =>
-      assertFeatureUnlocked("obsidian", "Obsidian memory"),
-    );
-    assert.doesNotThrow(() =>
-      assertFeatureUnlocked("devtools", "DevTools"),
-    );
-    assert.doesNotThrow(() =>
-      assertFeatureUnlocked("automation_kits", "Skills"),
-    );
+    assert.doesNotThrow(() => assertFeatureUnlocked("vault", "Agent Credential Vault"));
+    assert.doesNotThrow(() => assertFeatureUnlocked("human_vault", "Passwords"));
+    assert.doesNotThrow(() => assertFeatureUnlocked("obsidian", "Obsidian memory"));
+    assert.doesNotThrow(() => assertFeatureUnlocked("devtools", "DevTools"));
+    assert.doesNotThrow(() => assertFeatureUnlocked("automation_kits", "Skills"));
   } finally {
     setPremiumStatusForTest("free", "");
     await flushPersist();
@@ -662,20 +742,16 @@ test("premium billing portal uses the stored verification token", async () => {
       async (input, init) => {
         assert.equal(String(input), "https://vesselpremium.quantaintellect.com/portal");
         assert.equal(init?.method, "POST");
-        assert.deepEqual(
-          JSON.parse(String(init?.body || "{}")),
-          { identifier: "signed-token" },
-        );
-        return new Response(
-          JSON.stringify({ url: "https://billing.stripe.test/session" }),
-          { status: 200 },
-        );
+        assert.deepEqual(JSON.parse(String(init?.body || "{}")), { identifier: "signed-token" });
+        return new Response(JSON.stringify({ url: "https://billing.stripe.test/session" }), {
+          status: 200,
+        });
       },
       async () => {
-        assert.deepEqual(
-          await getPortalUrl(),
-          { ok: true, url: "https://billing.stripe.test/session" },
-        );
+        assert.deepEqual(await getPortalUrl(), {
+          ok: true,
+          url: "https://billing.stripe.test/session",
+        });
       },
     );
   } finally {
@@ -749,7 +825,10 @@ test("Codex function call output rejects malformed arguments without executing",
   assert.equal(output.type, "function_call_output");
   assert.equal(output.call_id, "call_1");
   assert.match(output.output, /Invalid JSON/);
-  assert.equal(chunks.some((chunk) => chunk.includes("invalid args")), true);
+  assert.equal(
+    chunks.some((chunk) => chunk.includes("invalid args")),
+    true,
+  );
 });
 
 test("Codex function call output rejects unsupported tools without executing", async () => {
@@ -825,7 +904,10 @@ test("Codex function call output emits tool chips only after execution completes
   resolveTool?.("Typed into: Search with DuckDuckGo = cheap flights");
   await callPromise;
 
-  assert.equal(chunks.some((chunk) => chunk.includes("<<tool:type_text:cheap flights>>")), true);
+  assert.equal(
+    chunks.some((chunk) => chunk.includes("<<tool:type_text:cheap flights>>")),
+    true,
+  );
 });
 
 test("Codex function call output marks failed executed tools as warning chips", async () => {
@@ -839,13 +921,20 @@ test("Codex function call output marks failed executed tools as warning chips", 
     },
     new Set(["type_text"]),
     (chunk) => chunks.push(chunk),
-    async () => "Error: No element index or selector provided, and no focused or visible text input could be found.",
+    async () =>
+      "Error: No element index or selector provided, and no focused or visible text input could be found.",
   );
 
   assert.equal(output.call_id, "call_failed_type");
   assert.match(output.output, /No element index/);
-  assert.equal(chunks.some((chunk) => chunk.includes("<<tool:type_text:⚠ failed cheap flights>>")), true);
-  assert.equal(chunks.some((chunk) => chunk.includes("<<tool:type_text:cheap flights>>")), false);
+  assert.equal(
+    chunks.some((chunk) => chunk.includes("<<tool:type_text:⚠ failed cheap flights>>")),
+    true,
+  );
+  assert.equal(
+    chunks.some((chunk) => chunk.includes("<<tool:type_text:cheap flights>>")),
+    false,
+  );
 });
 
 test("Codex tool chips do not mark successful same-page search as failed", async () => {
@@ -866,9 +955,7 @@ test("Codex tool chips do not mark successful same-page search as failed", async
   assert.equal(output.call_id, "call_search_same_page");
   assert.match(output.output, /Searched/);
   assert.equal(
-    chunks.some((chunk) =>
-      chunk.includes("<<tool:search:science fiction paperback>>"),
-    ),
+    chunks.some((chunk) => chunk.includes("<<tool:search:science fiction paperback>>")),
     true,
   );
   assert.equal(
@@ -891,7 +978,7 @@ test("Codex tool chips do not mark page content prose as read_page failure", asy
     async () =>
       [
         "[read_page mode=results_only]",
-        "Need more detail? Escalate with read_page(mode=\"debug\") only if needed.",
+        'Need more detail? Escalate with read_page(mode="debug") only if needed.',
         "A customer review says the character could not ignore the omen.",
       ].join("\n"),
   );
@@ -986,47 +1073,49 @@ test("Codex agent follow-up pairs function calls with their outputs", async () =
   const requestBodies: Array<Record<string, unknown>> = [];
   let ended = false;
 
-  await withMockFetch(async (_input, init) => {
-    requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
-    if (requestBodies.length === 1) {
-      return codexSseResponse(
+  await withMockFetch(
+    async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      if (requestBodies.length === 1) {
+        return codexSseResponse(
+          [
+            {
+              type: "response.output_item.done",
+              item: {
+                type: "function_call",
+                call_id: "call_abc",
+                name: "read_page",
+                arguments: "{}",
+              },
+            },
+          ],
+          { "x-codex-turn-state": "turn-state-1" },
+        );
+      }
+      return codexSseResponse([
+        {
+          type: "response.output_text.delta",
+          delta: "done",
+        },
+      ]);
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "show me the page",
         [
           {
-            type: "response.output_item.done",
-            item: {
-              type: "function_call",
-              call_id: "call_abc",
-              name: "read_page",
-              arguments: "{}",
-            },
+            name: "read_page",
+            description: "Read the current page",
+            input_schema: { type: "object", properties: {} },
           },
         ],
-        { "x-codex-turn-state": "turn-state-1" },
-      );
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "done",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "show me the page",
-      [
-        {
-          name: "read_page",
-          description: "Read the current page",
-          input_schema: { type: "object", properties: {} },
+        () => undefined,
+        async () => "Page text",
+        () => {
+          ended = true;
         },
-      ],
-      () => undefined,
-      async () => "Page text",
-      () => {
-        ended = true;
-      },
-    ),
+      ),
   );
 
   assert.equal(ended, true);
@@ -1061,40 +1150,42 @@ test("Codex agent recovers text-encoded tool calls", async () => {
   const chunks: string[] = [];
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 
-  await withMockFetch(async (_input, init) => {
-    requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
-    if (requestBodies.length === 1) {
+  await withMockFetch(
+    async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      if (requestBodies.length === 1) {
+        return codexSseResponse([
+          {
+            type: "response.output_text.delta",
+            delta: 'read_page [ARGS] {"mode":"visible_only"}',
+          },
+        ]);
+      }
       return codexSseResponse([
         {
           type: "response.output_text.delta",
-          delta: 'read_page [ARGS] {"mode":"visible_only"}',
+          delta: "done",
         },
       ]);
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "done",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "read the current page",
-      [
-        {
-          name: "read_page",
-          description: "Read the current page",
-          input_schema: { type: "object", properties: {} },
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "read the current page",
+        [
+          {
+            name: "read_page",
+            description: "Read the current page",
+            input_schema: { type: "object", properties: {} },
+          },
+        ],
+        (chunk) => chunks.push(chunk),
+        async (name, args) => {
+          calls.push({ name, args });
+          return "Page text";
         },
-      ],
-      (chunk) => chunks.push(chunk),
-      async (name, args) => {
-        calls.push({ name, args });
-        return "Page text";
-      },
-      () => undefined,
-    ),
+        () => undefined,
+      ),
   );
 
   assert.deepEqual(calls, [{ name: "read_page", args: { mode: "visible_only" } }]);
@@ -1128,43 +1219,45 @@ test("Codex agent recovers narrated action tool calls", async () => {
   );
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 
-  await withMockFetch(async () => {
-    if (calls.length === 0) {
+  await withMockFetch(
+    async () => {
+      if (calls.length === 0) {
+        return codexSseResponse([
+          {
+            type: "response.output_text.delta",
+            delta: 'Action: search "Hacker News"',
+          },
+        ]);
+      }
       return codexSseResponse([
         {
           type: "response.output_text.delta",
-          delta: 'Action: search "Hacker News"',
+          delta: "done",
         },
       ]);
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "done",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "search Hacker News",
-      [
-        {
-          name: "search",
-          description: "Search the web",
-          input_schema: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "search Hacker News",
+        [
+          {
+            name: "search",
+            description: "Search the web",
+            input_schema: {
+              type: "object",
+              properties: { query: { type: "string" } },
+              required: ["query"],
+            },
           },
+        ],
+        () => undefined,
+        async (name, args) => {
+          calls.push({ name, args });
+          return "Search complete";
         },
-      ],
-      () => undefined,
-      async (name, args) => {
-        calls.push({ name, args });
-        return "Search complete";
-      },
-      () => undefined,
-    ),
+        () => undefined,
+      ),
   );
 
   assert.deepEqual(calls, [{ name: "search", args: { query: "Hacker News" } }]);
@@ -1186,77 +1279,79 @@ test("Codex agent suppresses current-page re-search after successful web search"
   const query = "cheapest flight tomorrow from Portland to San Francisco";
   let requestCount = 0;
 
-  await withMockFetch(async () => {
-    requestCount += 1;
-    if (requestCount === 1) {
+  await withMockFetch(
+    async () => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        return codexSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_web_search",
+              name: "web_search",
+              arguments: JSON.stringify({ query }),
+            },
+          },
+        ]);
+      }
+      if (requestCount === 2) {
+        return codexSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_site_search",
+              name: "search",
+              arguments: JSON.stringify({ query }),
+            },
+          },
+        ]);
+      }
       return codexSseResponse([
         {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            call_id: "call_web_search",
+          type: "response.output_text.delta",
+          delta: "I found the current search results and will continue from them.",
+        },
+      ]);
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "can you help me find the cheapest flight for tomorrow from portland to san francisco?",
+        [
+          {
             name: "web_search",
-            arguments: JSON.stringify({ query }),
+            description: "Search the open web",
+            input_schema: {
+              type: "object",
+              properties: { query: { type: "string" } },
+              required: ["query"],
+            },
           },
-        },
-      ]);
-    }
-    if (requestCount === 2) {
-      return codexSseResponse([
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            call_id: "call_site_search",
+          {
             name: "search",
-            arguments: JSON.stringify({ query }),
+            description: "Search within current site",
+            input_schema: {
+              type: "object",
+              properties: { query: { type: "string" } },
+              required: ["query"],
+            },
           },
-        },
-      ]);
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "I found the current search results and will continue from them.",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "can you help me find the cheapest flight for tomorrow from portland to san francisco?",
-      [
-        {
-          name: "web_search",
-          description: "Search the open web",
-          input_schema: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
+          {
+            name: "read_page",
+            description: "Read current page",
+            input_schema: { type: "object", properties: {} },
           },
-        },
-        {
-          name: "search",
-          description: "Search within current site",
-          input_schema: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
-          },
-        },
-        {
-          name: "read_page",
-          description: "Read current page",
-          input_schema: { type: "object", properties: {} },
-        },
-      ],
-      (chunk) => chunks.push(chunk),
-      async (name, args) => {
-        calls.push({ name, args });
-        return `Web searched "${query}" via default search engine → https://duckduckgo.com/?q=cheapest%20flight%20tomorrow%20from%20Portland%20to%20San%20Francisco
+        ],
+        (chunk) => chunks.push(chunk),
+        async (name, args) => {
+          calls.push({ name, args });
+          return `Web searched "${query}" via default search engine → https://duckduckgo.com/?q=cheapest%20flight%20tomorrow%20from%20Portland%20to%20San%20Francisco
 [state: url=https://duckduckgo.com/?q=cheapest%20flight%20tomorrow%20from%20Portland%20to%20San%20Francisco, title="DuckDuckGo Search"]`;
-      },
-      () => undefined,
-    ),
+        },
+        () => undefined,
+      ),
   );
 
   assert.deepEqual(calls, [{ name: "web_search", args: { query } }]);
@@ -1282,73 +1377,75 @@ test("Codex agent suppresses query-drifted web search after successful web searc
   const requestBodies: Array<Record<string, unknown>> = [];
   let requestCount = 0;
 
-  await withMockFetch(async (_input, init) => {
-    requestCount += 1;
-    requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
-    if (requestCount === 1) {
+  await withMockFetch(
+    async (_input, init) => {
+      requestCount += 1;
+      requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      if (requestCount === 1) {
+        return codexSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_web_search",
+              name: "web_search",
+              arguments: JSON.stringify({
+                query: "cheapest flight tomorrow Portland to San Francisco",
+              }),
+            },
+          },
+        ]);
+      }
+      if (requestCount === 2) {
+        return codexSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_drifted_search",
+              name: "web_search",
+              arguments: JSON.stringify({
+                query: "Portland to San Francisco flights tomorrow cheapest",
+              }),
+            },
+          },
+        ]);
+      }
       return codexSseResponse([
         {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            call_id: "call_web_search",
-            name: "web_search",
-            arguments: JSON.stringify({
-              query: "cheapest flight tomorrow Portland to San Francisco",
-            }),
-          },
+          type: "response.output_text.delta",
+          delta: "I will continue from the existing search results.",
         },
       ]);
-    }
-    if (requestCount === 2) {
-      return codexSseResponse([
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            call_id: "call_drifted_search",
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "can you help me find the cheapest flight for tomorrow from portland to san francisco?",
+        [
+          {
             name: "web_search",
-            arguments: JSON.stringify({
-              query: "Portland to San Francisco flights tomorrow cheapest",
-            }),
+            description: "Search the open web",
+            input_schema: {
+              type: "object",
+              properties: { query: { type: "string" } },
+              required: ["query"],
+            },
           },
-        },
-      ]);
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "I will continue from the existing search results.",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "can you help me find the cheapest flight for tomorrow from portland to san francisco?",
-      [
-        {
-          name: "web_search",
-          description: "Search the open web",
-          input_schema: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
+          {
+            name: "read_page",
+            description: "Read current page",
+            input_schema: { type: "object", properties: {} },
           },
-        },
-        {
-          name: "read_page",
-          description: "Read current page",
-          input_schema: { type: "object", properties: {} },
-        },
-      ],
-      (chunk) => chunks.push(chunk),
-      async (name, args) => {
-        calls.push({ name, args });
-        return `Web searched "cheapest flight tomorrow Portland to San Francisco" via default search engine → https://duckduckgo.com/?q=cheapest+flight+tomorrow+Portland+to+San+Francisco
+        ],
+        (chunk) => chunks.push(chunk),
+        async (name, args) => {
+          calls.push({ name, args });
+          return `Web searched "cheapest flight tomorrow Portland to San Francisco" via default search engine → https://duckduckgo.com/?q=cheapest+flight+tomorrow+Portland+to+San+Francisco
 [state: url=https://duckduckgo.com/?q=cheapest+flight+tomorrow+Portland+to+San+Francisco, title="DuckDuckGo Search"]`;
-      },
-      () => undefined,
-    ),
+        },
+        () => undefined,
+      ),
   );
 
   assert.deepEqual(calls, [
@@ -1383,51 +1480,53 @@ test("Codex agent suppresses clear_overlays without an overlay signal", async ()
   const requestBodies: Array<Record<string, unknown>> = [];
   let requestCount = 0;
 
-  await withMockFetch(async (_input, init) => {
-    requestCount += 1;
-    requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
-    if (requestCount === 1) {
+  await withMockFetch(
+    async (_input, init) => {
+      requestCount += 1;
+      requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      if (requestCount === 1) {
+        return codexSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_clear",
+              name: "clear_overlays",
+              arguments: "{}",
+            },
+          },
+        ]);
+      }
       return codexSseResponse([
         {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            call_id: "call_clear",
-            name: "clear_overlays",
-            arguments: "{}",
-          },
+          type: "response.output_text.delta",
+          delta: "I will use the page state instead.",
         },
       ]);
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "I will use the page state instead.",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "can you help me find the cheapest flight for tomorrow from portland to san francisco?",
-      [
-        {
-          name: "clear_overlays",
-          description: "Clear blocking overlays",
-          input_schema: { type: "object", properties: {} },
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "can you help me find the cheapest flight for tomorrow from portland to san francisco?",
+        [
+          {
+            name: "clear_overlays",
+            description: "Clear blocking overlays",
+            input_schema: { type: "object", properties: {} },
+          },
+          {
+            name: "read_page",
+            description: "Read current page",
+            input_schema: { type: "object", properties: {} },
+          },
+        ],
+        (chunk) => chunks.push(chunk),
+        async (name, args) => {
+          calls.push({ name, args });
+          return "No blocking overlays detected";
         },
-        {
-          name: "read_page",
-          description: "Read current page",
-          input_schema: { type: "object", properties: {} },
-        },
-      ],
-      (chunk) => chunks.push(chunk),
-      async (name, args) => {
-        calls.push({ name, args });
-        return "No blocking overlays detected";
-      },
-      () => undefined,
-    ),
+        () => undefined,
+      ),
   );
 
   assert.deepEqual(calls, []);
@@ -1455,55 +1554,60 @@ test("Codex agent recovers after a failed result click", async () => {
   const chunks: string[] = [];
   const requestBodies: Array<Record<string, unknown>> = [];
 
-  await withMockFetch(async (_input, init) => {
-    requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
-    if (requestBodies.length === 1) {
+  await withMockFetch(
+    async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      if (requestBodies.length === 1) {
+        return codexSseResponse([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call_click",
+              name: "click",
+              arguments: JSON.stringify({ index: 12 }),
+            },
+          },
+        ]);
+      }
       return codexSseResponse([
         {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            call_id: "call_click",
-            name: "click",
-            arguments: JSON.stringify({ index: 12 }),
-          },
+          type: "response.output_text.delta",
+          delta: "I will recover from the failed click.",
         },
       ]);
-    }
-    return codexSseResponse([
-      {
-        type: "response.output_text.delta",
-        delta: "I will recover from the failed click.",
-      },
-    ]);
-  }, () =>
-    provider.streamAgentQuery(
-      "system",
-      "open the cheapest flight result",
-      [
-        {
-          name: "click",
-          description: "Click an element",
-          input_schema: {
-            type: "object",
-            properties: { index: { type: "number" } },
-            required: ["index"],
+    },
+    () =>
+      provider.streamAgentQuery(
+        "system",
+        "open the cheapest flight result",
+        [
+          {
+            name: "click",
+            description: "Click an element",
+            input_schema: {
+              type: "object",
+              properties: { index: { type: "number" } },
+              required: ["index"],
+            },
           },
-        },
-        {
-          name: "read_page",
-          description: "Read current page",
-          input_schema: { type: "object", properties: {} },
-        },
-      ],
-      (chunk) => chunks.push(chunk),
-      async () =>
-        "Clicked: Result snippet (clicked)\nNote: Page did not change after click. The element may need a different interaction method. Consider read_page or inspect_element.",
-      () => undefined,
-    ),
+          {
+            name: "read_page",
+            description: "Read current page",
+            input_schema: { type: "object", properties: {} },
+          },
+        ],
+        (chunk) => chunks.push(chunk),
+        async () =>
+          "Clicked: Result snippet (clicked)\nNote: Page did not change after click. The element may need a different interaction method. Consider read_page or inspect_element.",
+        () => undefined,
+      ),
   );
 
-  assert.equal(chunks.some((chunk) => chunk.includes("<<tool:click:⚠ failed #12>>")), true);
+  assert.equal(
+    chunks.some((chunk) => chunk.includes("<<tool:click:⚠ failed #12>>")),
+    true,
+  );
   const followUpInput = JSON.stringify(requestBodies[1]?.input ?? []);
   assert.match(followUpInput, /previous click did not complete for #12/);
   // The recovery message gives the model options, including

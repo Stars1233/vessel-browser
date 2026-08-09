@@ -1,11 +1,10 @@
 import { safeStorage } from "electron";
 import fs from "fs";
-import path from "path";
 import { createLogger } from "../../shared/logger";
+import { writeFileAtomic } from "../utils/safe-fs";
 
 const logger = createLogger("JsonPersistence");
-const SECURE_STORAGE_UNAVAILABLE_MESSAGE =
-  "Secure persistence requires OS-backed secret storage.";
+const SECURE_STORAGE_UNAVAILABLE_MESSAGE = "Secure persistence requires OS-backed secret storage.";
 
 class SecureStorageUnavailableError extends Error {
   constructor() {
@@ -40,11 +39,7 @@ function canUseSafeStorage(): boolean {
 }
 
 function assertSecureStorageAvailable(): void {
-  if (
-    !canUseSafeStorage() ||
-    !safeStorage.encryptString ||
-    !safeStorage.decryptString
-  ) {
+  if (!canUseSafeStorage() || !safeStorage.encryptString || !safeStorage.decryptString) {
     throw new SecureStorageUnavailableError();
   }
 }
@@ -80,8 +75,7 @@ export function loadJsonFile<T>({
     const decoded = decodeStoredData(raw, secure);
     return parse(JSON.parse(decoded));
   } catch (err) {
-    const isMissingFile =
-      err instanceof Error && "code" in err && err.code === "ENOENT";
+    const isMissingFile = err instanceof Error && "code" in err && err.code === "ENOENT";
     if (isMissingFile) {
       logger.info(`Persistence file not found; using fallback defaults: ${filePath}`);
     } else if (isSecureStorageUnavailableError(err)) {
@@ -104,6 +98,7 @@ export function createDebouncedJsonPersistence<T>({
 }: DebouncedJsonPersistenceOptions<T>) {
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saveDirty = false;
+  let writeChain = Promise.resolve();
 
   const persistNow = async (): Promise<void> => {
     saveDirty = false;
@@ -115,28 +110,22 @@ export function createDebouncedJsonPersistence<T>({
     const value = getValue();
     if (value == null) return;
 
-    const payload = JSON.stringify(
-      serialize ? serialize(value) : value,
-      null,
-      2,
-    );
+    const payload = JSON.stringify(serialize ? serialize(value) : value, null, 2);
     const data = encodeStoredData(payload, secure);
 
-    await fs.promises
-      .mkdir(path.dirname(filePath), { recursive: true })
-      .then(() =>
-        fs.promises.writeFile(
-          filePath,
-          data,
-          typeof data === "string"
-            ? { encoding: "utf-8", mode: 0o600 }
-            : { mode: 0o600 },
-        ),
-      )
-      .then(() => fs.promises.chmod(filePath, 0o600).catch((err) => {
-        logger.warn(`Failed to chmod ${logLabel}:`, err);
-      }))
-      .catch((err) => logger.error(`Failed to save ${logLabel}:`, err));
+    writeChain = writeChain
+      .catch(() => {
+        // A failed write must not prevent a later snapshot from being attempted.
+      })
+      .then(async () => {
+        try {
+          await writeFileAtomic(filePath, data, { mode: 0o600 });
+        } catch (err) {
+          logger.error(`Failed to save ${logLabel}:`, err);
+          throw err;
+        }
+      });
+    return writeChain;
   };
 
   const schedule = (): void => {

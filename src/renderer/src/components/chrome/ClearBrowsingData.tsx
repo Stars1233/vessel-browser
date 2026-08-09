@@ -2,6 +2,7 @@ import { createSignal, Show, type Component } from "solid-js";
 import { Check, X } from "lucide-solid";
 import type { ClearDataTimeRange } from "../../../../shared/types";
 import "./chrome.css";
+import { useModalFocus } from "../../lib/useModalFocus";
 
 const TIME_RANGES: { value: ClearDataTimeRange; label: string }[] = [
   { value: "hour", label: "Last hour" },
@@ -23,6 +24,7 @@ const ClearBrowsingData: Component<{
   const [clearing, setClearing] = createSignal(false);
   const [done, setDone] = createSignal(false);
   const [error, setError] = createSignal("");
+  let dialogRef: HTMLDivElement | undefined;
 
   const handleClear = async () => {
     setClearing(true);
@@ -56,28 +58,45 @@ const ClearBrowsingData: Component<{
     setDone(false);
     setError("");
   };
+  const close = () => {
+    reset();
+    props.onClose();
+  };
+  useModalFocus(
+    () => props.open,
+    () => dialogRef,
+    close,
+  );
 
   return (
     <Show when={props.open}>
-      <div class="clear-data-overlay" onClick={props.onClose}>
-        <div class="clear-data-dialog" onClick={(e) => e.stopPropagation()}>
+      <div class="clear-data-overlay" onClick={close}>
+        <div
+          ref={dialogRef}
+          class="clear-data-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="clear-data-title"
+          tabIndex={-1}
+          onClick={(e) => e.stopPropagation()}
+        >
           <Show
             when={!done()}
             fallback={
-              <div class="clear-data-done">
+              <div class="clear-data-done" role="status" aria-live="polite">
                 <Check size={20} stroke-width={2.5} />
                 <span>Browsing data cleared</span>
               </div>
             }
           >
             <div class="clear-data-header">
-              <h3>Clear browsing data</h3>
+              <h3 id="clear-data-title">Clear browsing data</h3>
               <button
                 class="clear-data-close"
                 onClick={() => {
-                  reset();
-                  props.onClose();
+                  close();
                 }}
+                aria-label="Close clear browsing data"
               >
                 <X size={14} />
               </button>
@@ -87,9 +106,7 @@ const ClearBrowsingData: Component<{
               <label>Time range</label>
               <select
                 value={timeRange()}
-                onChange={(e) =>
-                  setTimeRange(e.currentTarget.value as ClearDataTimeRange)
-                }
+                onChange={(e) => setTimeRange(e.currentTarget.value as ClearDataTimeRange)}
                 class="clear-data-select"
               >
                 {TIME_RANGES.map((r) => (
@@ -134,25 +151,23 @@ const ClearBrowsingData: Component<{
             </div>
 
             <Show when={error()}>
-              <div class="clear-data-error">{error()}</div>
+              <div class="clear-data-error" role="alert">
+                {error()}
+              </div>
             </Show>
 
             <div class="clear-data-actions">
               <button
                 class="clear-data-cancel"
                 onClick={() => {
-                  reset();
-                  props.onClose();
+                  close();
                 }}
               >
                 Cancel
               </button>
               <button
                 class="clear-data-confirm"
-                disabled={
-                  clearing() ||
-                  (!cache() && !cookies() && !history() && !localStorage())
-                }
+                disabled={clearing() || (!cache() && !cookies() && !history() && !localStorage())}
                 onClick={handleClear}
               >
                 {clearing() ? "Clearing..." : "Clear data"}

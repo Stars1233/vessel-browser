@@ -9,5 +9,6 @@ export const UIChannels = {
   SIDEBAR_STATE_UPDATE: "ui:sidebar-state-update",
   SIDEBAR_CONTEXT_MENU: "ui:sidebar-context-menu",
   FOCUS_MODE_TOGGLE: "ui:focus-mode-toggle",
+  BROWSER_SHORTCUT: "ui:browser-shortcut",
   SETTINGS_VISIBILITY: "ui:settings-visibility",
 } as const;

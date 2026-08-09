@@ -7,6 +7,13 @@ import { Report } from "c8";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const testDirectory = path.join(repoRoot, "tests");
+const reportsDirectory = path.join(repoRoot, "coverage");
+const coverageThresholds = {
+  statements: 56,
+  branches: 70,
+  functions: 67,
+  lines: 56,
+};
 const localOnlyTests = new Set(
   readFileSync(path.join(testDirectory, "local-only-tests.txt"), "utf8")
     .split(/\r?\n/)
@@ -15,10 +22,7 @@ const localOnlyTests = new Set(
 );
 const testFiles = readdirSync(testDirectory, { withFileTypes: true })
   .filter(
-    (entry) =>
-      entry.isFile() &&
-      entry.name.endsWith(".test.ts") &&
-      !localOnlyTests.has(entry.name),
+    (entry) => entry.isFile() && entry.name.endsWith(".test.ts") && !localOnlyTests.has(entry.name),
   )
   .map((entry) => `tests/${entry.name}`)
   .sort();
@@ -56,12 +60,28 @@ try {
 
   const report = new Report({
     omitRelative: true,
-    reporter: ["text", "html"],
-    reportsDirectory: path.join(repoRoot, "coverage"),
+    reporter: ["text", "html", "json-summary"],
+    reportsDirectory,
     resolve: "",
     tempDirectory,
   });
   await report.run();
+
+  const summary = JSON.parse(
+    readFileSync(path.join(reportsDirectory, "coverage-summary.json"), "utf8"),
+  );
+  for (const [metric, threshold] of Object.entries(coverageThresholds)) {
+    const actual = summary.total?.[metric]?.pct;
+    if (!Number.isFinite(actual)) {
+      throw new Error(`Coverage report is missing the ${metric} total.`);
+    }
+    if (actual < threshold) {
+      console.error(
+        `Coverage for ${metric} (${actual}%) does not meet the global threshold (${threshold}%).`,
+      );
+      process.exitCode = 1;
+    }
+  }
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

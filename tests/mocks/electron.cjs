@@ -9,18 +9,24 @@ function createMockWebContents() {
   let zoom = 0;
   let destroyed = false;
   let destroyedListener;
+  let currentUrl = "about:blank";
   const ipcHandlers = new Map();
   const ipcListeners = new Map();
+  const eventListeners = new Map();
+  const loadedUrls = [];
   return {
     id: wcId,
     isDestroyed: () => destroyed,
-    getURL: () => "about:blank",
+    getURL: () => currentUrl,
     getTitle: () => "New Tab",
     session: {
       fromPartition: () => ({ setCertificateVerifyProc: () => {} }),
       setCertificateVerifyProc: () => {},
     },
-    loadURL: () => {},
+    loadURL: (url) => {
+      loadedUrls.push(url);
+      return Promise.resolve();
+    },
     loadFile: () => {},
     reload: () => {},
     getZoomLevel: () => zoom,
@@ -30,7 +36,11 @@ function createMockWebContents() {
     isCurrentlyAudible: () => false,
     executeJavaScript: () => Promise.resolve({}),
     setWindowOpenHandler: () => {},
-    on: () => {},
+    on: (event, listener) => {
+      const listeners = eventListeners.get(event) || [];
+      listeners.push(listener);
+      eventListeners.set(event, listeners);
+    },
     once: (event, listener) => {
       if (event === "destroyed") {
         destroyedListener = listener;
@@ -49,6 +59,13 @@ function createMockWebContents() {
     cut: () => {},
     selectAll: () => {},
     send: () => {},
+    _loadedUrls: loadedUrls,
+    _emit: (event, ...args) => {
+      if (event === "did-navigate" && typeof args[1] === "string") {
+        currentUrl = args[1];
+      }
+      for (const listener of eventListeners.get(event) || []) listener(...args);
+    },
     ipc: {
       handle: (channel, listener) => {
         ipcHandlers.set(channel, listener);
@@ -77,12 +94,20 @@ function WebContentsView(opts) {
 
 function createMockSession() {
   const cookieStore = [];
-  return {
+  const mockSession = {
     setUserAgent: () => {},
     getUserAgent: () => "Vessel Test",
     setCertificateVerifyProc: () => {},
     webRequest: { onBeforeRequest: () => {} },
     on: () => {},
+    setPermissionCheckHandler: (handler) => {
+      mockSession._permissionCheckHandler = handler;
+    },
+    setPermissionRequestHandler: (handler) => {
+      mockSession._permissionRequestHandler = handler;
+    },
+    _permissionCheckHandler: undefined,
+    _permissionRequestHandler: undefined,
     clearStorageData: () => {
       cookieStore.length = 0;
       return Promise.resolve();
@@ -118,6 +143,7 @@ function createMockSession() {
       },
     },
   };
+  return mockSession;
 }
 
 const defaultSession = createMockSession();

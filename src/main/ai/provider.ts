@@ -11,7 +11,7 @@ import type {
 import { okResult } from "../../shared/result";
 import { AnthropicProvider } from "./provider-anthropic";
 import { OpenAICompatProvider } from "./provider-openai";
-import { PROVIDERS } from "../../shared/providers";
+import { CODEX_BACKEND_BASE_URL, PROVIDERS, resolveProviderBaseUrl } from "../../shared/providers";
 import { CodexProvider, CODEX_CLIENT_VERSION } from "./provider-codex";
 import { refreshAccessToken } from "./codex-oauth";
 import {
@@ -174,7 +174,7 @@ export function buildLlamaCppCtxWarning(ctxSize: number | null): string | undefi
 }
 
 async function fetchCodexBackendModels(tokens: CodexOAuthTokens): Promise<string[]> {
-  const url = new URL("https://chatgpt.com/backend-api/codex/models");
+  const url = new URL(`${CODEX_BACKEND_BASE_URL}/models`);
   url.searchParams.set("client_version", CODEX_CLIENT_VERSION);
 
   const headers: Record<string, string> = {
@@ -287,13 +287,21 @@ interface ProviderHandlers {
 }
 
 async function listAnthropicModels(config: ProviderConfig): Promise<ProviderModelsResult> {
-  const client = new Anthropic({ apiKey: config.apiKey });
+  const client = new Anthropic({
+    apiKey: config.apiKey,
+    baseURL: resolveProviderBaseUrl(config),
+  });
   const page = await client.models.list();
   return okResult({ models: page.data.map((model) => model.id) });
 }
 
 function createAnthropicProvider(config: ProviderConfig): AIProvider {
-  return new AnthropicProvider(config.apiKey, config.model, config.reasoningEffort ?? "off");
+  return new AnthropicProvider(
+    config.apiKey,
+    config.model,
+    config.reasoningEffort ?? "off",
+    resolveProviderBaseUrl(config),
+  );
 }
 
 async function listCodexModels(_config: ProviderConfig): Promise<ProviderModelsResult> {
@@ -328,8 +336,7 @@ function createCodexProvider(config: ProviderConfig): AIProvider {
 }
 
 async function listOpenAICompatModels(config: ProviderConfig): Promise<ProviderModelsResult> {
-  const meta = PROVIDERS[config.id];
-  const baseURL = config.baseUrl || meta?.defaultBaseUrl || "https://api.openai.com/v1";
+  const baseURL = resolveProviderBaseUrl(config);
   const client = new OpenAI({
     apiKey: config.apiKey || "ollama",
     baseURL,

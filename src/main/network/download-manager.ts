@@ -25,6 +25,15 @@ const EXECUTABLE_EXTENSIONS = new Set([
 
 const DOWNLOADS_FALLBACK = { items: [] as DownloadRecord[] };
 
+export type DownloadRecordInput = Omit<DownloadRecord, "id" | "startedAt" | "updatedAt">;
+
+export interface DownloadRecordStore {
+  clear: () => void;
+  get: (id: string) => DownloadRecord | undefined;
+  list: () => DownloadRecord[];
+  upsert: (input: DownloadRecordInput) => DownloadRecord;
+}
+
 function hasMisleadingDoubleExtension(filename: string): boolean {
   return /\.(pdf|docx?|xlsx?|pptx?|png|jpe?g|gif|txt|zip)\.(exe|msi|bat|cmd|ps1|sh|scr|appimage)$/i.test(
     filename,
@@ -77,9 +86,7 @@ export function listDownloads(): DownloadRecord[] {
   return store.getState().items.map((item) => ({ ...item }));
 }
 
-export function upsertDownload(
-  input: Omit<DownloadRecord, "id" | "startedAt" | "updatedAt">,
-): DownloadRecord {
+export function upsertDownload(input: DownloadRecordInput): DownloadRecord {
   const now = new Date().toISOString();
   const result = store.mutate((s) => {
     const existing = s.items.find((item) => item.savePath === input.savePath);
@@ -104,8 +111,53 @@ export function clearDownloads(): void {
   emit();
 }
 
+export const persistentDownloadStore: DownloadRecordStore = {
+  clear: clearDownloads,
+  get: (id) => {
+    const record = store.getState().items.find((item) => item.id === id);
+    return record ? { ...record } : undefined;
+  },
+  list: listDownloads,
+  upsert: (input) => ({ ...upsertDownload(input) }),
+};
+
+export function createInMemoryDownloadStore(): DownloadRecordStore {
+  const records = new Map<string, DownloadRecord>();
+
+  return {
+    clear: () => records.clear(),
+    get: (id) => {
+      const record = records.get(id);
+      return record ? { ...record } : undefined;
+    },
+    list: () => [...records.values()].reverse().map((record) => ({ ...record })),
+    upsert: (input) => {
+      const now = new Date().toISOString();
+      const existing = [...records.values()].find((record) => record.savePath === input.savePath);
+      const record: DownloadRecord = existing
+        ? { ...existing, ...input, updatedAt: now }
+        : {
+            id: randomUUID(),
+            ...input,
+            startedAt: now,
+            updatedAt: now,
+          };
+      records.set(record.id, record);
+      if (records.size > 200) {
+        const oldestId = records.keys().next().value;
+        if (oldestId) records.delete(oldestId);
+      }
+      return { ...record };
+    },
+  };
+}
+
 export async function openDownload(id: string): Promise<boolean> {
   const item = store.getState().items.find((d) => d.id === id);
+  return openDownloadRecord(item);
+}
+
+export async function openDownloadRecord(item: DownloadRecord | undefined): Promise<boolean> {
   if (!item || item.state !== "completed" || !fs.existsSync(item.savePath)) return false;
   if (isExecutableDownload(item.savePath)) {
     const result = dialog.showMessageBoxSync({
@@ -124,6 +176,12 @@ export async function openDownload(id: string): Promise<boolean> {
 
 export async function showDownloadInFolder(id: string): Promise<boolean> {
   const item = store.getState().items.find((d) => d.id === id);
+  return showDownloadRecordInFolder(item);
+}
+
+export async function showDownloadRecordInFolder(
+  item: DownloadRecord | undefined,
+): Promise<boolean> {
   if (!item || !fs.existsSync(item.savePath)) return false;
   shell.showItemInFolder(item.savePath);
   return true;

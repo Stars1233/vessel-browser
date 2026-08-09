@@ -41,8 +41,7 @@ function getPageDiffSignature(): string {
     .map((el) => normalizeSignatureText(el.textContent))
     .filter(Boolean)
     .join(" | ");
-  const mainRoot =
-    document.querySelector("main, article, [role='main']") || document.body;
+  const mainRoot = document.querySelector("main, article, [role='main']") || document.body;
   const visibleText = collectBoundedVisibleText(mainRoot, 1200);
   return [window.location.href, title, headings, visibleText].join("\n");
 }
@@ -97,10 +96,7 @@ function isDocumentViewerPage(): boolean {
     if (/\.(pdf|epub|mobi|cbz|cbr)$/.test(pathname)) return true;
 
     const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    if (
-      host === "archive.org" &&
-      /^\/(details|stream|download)\//.test(pathname)
-    ) {
+    if (host === "archive.org" && /^\/(details|stream|download)\//.test(pathname)) {
       return true;
     }
   } catch {
@@ -140,14 +136,12 @@ export function startPageDiffObserver(): void {
   window.addEventListener("popstate", resetSignature);
   window.addEventListener("hashchange", resetSignature);
 
-  observer.observe(document.documentElement, {
+  const observerOptions: MutationObserverInit = {
     subtree: true,
     childList: true,
     characterData: true,
     attributes: true,
     attributeFilter: [
-      "class",
-      "style",
       "hidden",
       "aria-hidden",
       "aria-expanded",
@@ -157,10 +151,29 @@ export function startPageDiffObserver(): void {
       "title",
       "open",
     ],
-  });
+  };
+  const observeVisibleDocument = () => {
+    if (document.hidden) return;
+    lastPageDiffSignature = getPageDiffSignature();
+    observer.observe(document.documentElement, observerOptions);
+  };
+  const handleVisibilityChange = () => {
+    if (document.hidden) {
+      observer.disconnect();
+      if (pageDiffMutationTimer) {
+        clearTimeout(pageDiffMutationTimer);
+        pageDiffMutationTimer = null;
+      }
+      return;
+    }
+    observeVisibleDocument();
+  };
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  observeVisibleDocument();
 
   window.addEventListener("beforeunload", () => {
     observer.disconnect();
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
     if (pageDiffActivityThrottleTimer) {
       clearTimeout(pageDiffActivityThrottleTimer);
       pageDiffActivityThrottleTimer = null;

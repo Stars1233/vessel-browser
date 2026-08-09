@@ -1,24 +1,21 @@
-import OpenAI from 'openai';
-import type Anthropic from '@anthropic-ai/sdk';
-import type { AIProvider } from './provider';
-import type { AIMessage, ProviderConfig, ReasoningEffortLevel } from '../../shared/types';
-import { PROVIDERS } from "../../shared/providers";
-import { isRichToolResult, type TextBlock } from './tool-result';
-import { getEffectiveMaxIterations } from '../premium/manager';
-import {
-  resolveAgentToolProfile,
-  type AgentToolProfile,
-} from './tool-profile';
-import type { ProviderId } from '../../shared/types';
+import OpenAI from "openai";
+import type Anthropic from "@anthropic-ai/sdk";
+import type { AIProvider } from "./provider";
+import type { AIMessage, ProviderConfig, ReasoningEffortLevel } from "../../shared/types";
+import { PROVIDERS, resolveProviderBaseUrl } from "../../shared/providers";
+import { isRichToolResult, type TextBlock } from "./tool-result";
+import { getEffectiveMaxIterations } from "../premium/manager";
+import { resolveAgentToolProfile, type AgentToolProfile } from "./tool-profile";
+import type { ProviderId } from "../../shared/types";
 import {
   buildRepeatedToolCallError,
   ClickReadLoopGuard,
   REPEATED_TOOL_CALL_NUDGE,
   shouldSuppressDuplicateToolCall,
-} from './tool-guardrails';
-import { LLAMA_CPP_MIN_CTX_TOKENS, LLAMA_CPP_RECOMMENDED_CTX_TOKENS } from './content-limits';
-import { createLogger } from '../../shared/logger';
-import { TERMINAL_TOOL_RESULT } from './tool-control';
+} from "./tool-guardrails";
+import { LLAMA_CPP_MIN_CTX_TOKENS, LLAMA_CPP_RECOMMENDED_CTX_TOKENS } from "./content-limits";
+import { createLogger } from "../../shared/logger";
+import { TERMINAL_TOOL_RESULT } from "./tool-control";
 import {
   buildHighlightToolCompletionPrompt,
   coerceToolArgsForExecution,
@@ -29,31 +26,28 @@ import {
   shouldRetryUnexecutedHighlightCompletion,
   stableToolSignature,
   unsupportedToolHint,
-} from './provider-openai-tools';
-import {
-  logOpenAIPromptCacheUsage,
-  openAIPromptCacheOptions,
-} from './prompt-cache';
+} from "./provider-openai-tools";
+import { logOpenAIPromptCacheUsage, openAIPromptCacheOptions } from "./prompt-cache";
 import {
   buildFlightPriceEvidenceRecoveryPrompt,
   shouldBlockUnsupportedFlightPriceAnswer,
-} from './flight-price-evidence';
+} from "./flight-price-evidence";
 import {
   buildLatestStateReminder,
   buildRepeatedSearchError,
   normalizeSearchToolQuery,
   SearchLoopGuard,
-} from './search-loop-guard';
+} from "./search-loop-guard";
 
 const logger = createLogger("OpenAIProvider");
 
 function shouldDebugAgentLoop(): boolean {
   const value = process.env.VESSEL_DEBUG_AGENT_LOOP;
-  return value === '1' || value === 'true';
+  return value === "1" || value === "true";
 }
 
 function previewDebugValue(value: string, maxLength = 800): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
+  const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength)}…`;
 }
@@ -64,22 +58,20 @@ function previewToolDebugContent(content: string): string {
 
 function toOpenAITools(tools: Anthropic.Tool[]): OpenAI.ChatCompletionTool[] {
   return tools.map((t) => ({
-    type: 'function' as const,
+    type: "function" as const,
     function: {
       name: t.name,
-      description: t.description ?? '',
+      description: t.description ?? "",
       parameters: t.input_schema as Record<string, unknown>,
     },
   }));
 }
 
-function agentTemperatureForProfile(
-  profile: AgentToolProfile,
-): number | undefined {
-  return profile === 'compact' ? 0.2 : undefined;
+function agentTemperatureForProfile(profile: AgentToolProfile): number | undefined {
+  return profile === "compact" ? 0.2 : undefined;
 }
 
-type OpenAIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+type OpenAIReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 
 function modelLikelySupportsOpenAIReasoningEffort(model: string): boolean {
   return /^(?:o\d|o[1-9]|gpt-5|codex|computer-use)/i.test(model.trim());
@@ -91,49 +83,47 @@ function toOpenAIReasoningEffort(
   model: string,
 ): OpenAIReasoningEffort | undefined {
   const supportsReasoningParam =
-    providerId === 'openrouter' ||
-    providerId === 'custom' ||
-    (providerId === 'openai' && modelLikelySupportsOpenAIReasoningEffort(model));
+    providerId === "openrouter" ||
+    providerId === "custom" ||
+    (providerId === "openai" && modelLikelySupportsOpenAIReasoningEffort(model));
 
   if (!supportsReasoningParam) return undefined;
 
   switch (effort) {
-    case 'off':
-      if (providerId === 'openai' && !/^gpt-5\.1/i.test(model.trim())) {
+    case "off":
+      if (providerId === "openai" && !/^gpt-5\.1/i.test(model.trim())) {
         return undefined;
       }
-      return 'none';
-    case 'low':
-      return 'low';
-    case 'medium':
-      return 'medium';
-    case 'high':
-      return 'high';
-    case 'max':
-      return 'xhigh';
+      return "none";
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "max":
+      return "xhigh";
     default:
       return undefined;
   }
 }
 
-function openRouterRoutingOptions(
-  providerId: ProviderId,
-): Record<string, unknown> {
-  if (providerId !== 'openrouter') return {};
+function openRouterRoutingOptions(providerId: ProviderId): Record<string, unknown> {
+  if (providerId !== "openrouter") return {};
 
   return {
     provider: {
       require_parameters: true,
-      sort: 'latency',
+      sort: "latency",
     },
   };
 }
 
 export function buildOpenRouterAttributionHeaders(): Record<string, string> {
   return {
-    'HTTP-Referer': 'https://github.com/unmodeled-tyler/vessel-browser',
-    'X-OpenRouter-Title': 'Vessel Browser',
-    'X-OpenRouter-Categories': 'personal-agent,general-chat',
+    "HTTP-Referer": "https://github.com/unmodeled-tyler/vessel-browser",
+    "X-OpenRouter-Title": "Vessel Browser",
+    "X-OpenRouter-Categories": "personal-agent,general-chat",
   };
 }
 
@@ -143,19 +133,19 @@ function followUpReminderForProfile(
   assistantText?: string,
   latestToolResultPreview?: string | null,
 ): OpenAI.Chat.ChatCompletionUserMessageParam | null {
-  if (profile !== 'compact') return null;
+  if (profile !== "compact") return null;
 
-  const phaseReminder = buildPhaseReminder(userMessage, assistantText || '');
+  const phaseReminder = buildPhaseReminder(userMessage, assistantText || "");
   const stateReminder = buildLatestStateReminder(latestToolResultPreview);
 
   return {
-    role: 'user',
+    role: "user",
     content:
       `[System] Task reminder: Continue working on the user's original request until it is completed: ${userMessage}\n` +
       `Do not ask the user what they want next unless the request is genuinely ambiguous or blocked. ` +
       `After navigation or page reads, keep executing the same task.` +
-      (stateReminder ? `\n${stateReminder}` : '') +
-      (phaseReminder ? `\n${phaseReminder}` : ''),
+      (stateReminder ? `\n${stateReminder}` : "") +
+      (phaseReminder ? `\n${phaseReminder}` : ""),
   };
 }
 
@@ -169,8 +159,8 @@ function extractSingleGoalDomain(goal: string): string | null {
   if (!matches || matches.length !== 1) return null;
 
   return matches[0]
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
     .toLowerCase();
 }
 
@@ -182,7 +172,7 @@ export function buildCompactRecoveryPrompt(
   const phaseReminder = buildPhaseReminder(userMessage, assistantText);
   const stateReminder = buildLatestStateReminder(latestToolResultPreview);
   const goalDomain = extractSingleGoalDomain(userMessage);
-  const latest = (latestToolResultPreview || '').toLowerCase();
+  const latest = (latestToolResultPreview || "").toLowerCase();
   const assistant = assistantText.toLowerCase();
   const alreadyOnGoalSite =
     !!goalDomain &&
@@ -209,23 +199,18 @@ export function buildCompactRecoveryPrompt(
     lines.push(phaseReminder);
   }
 
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
-export function buildPhaseReminder(
-  userMessage: string,
-  assistantText: string,
-): string {
+export function buildPhaseReminder(userMessage: string, assistantText: string): string {
   const goal = userMessage.toLowerCase();
   const text = assistantText.toLowerCase();
-  if (!goal || !text) return '';
+  if (!goal || !text) return "";
 
   const wantsCart = /\b(cart|bag|basket|checkout)\b/.test(goal);
   const wantsExplanation = /\b(explain|reason|why)\b/.test(goal);
   const wantsBookRecommendations =
-    /\b(book|books|recommend|recommended|interesting|novel|fiction|nonfiction)\b/.test(
-      goal,
-    );
+    /\b(book|books|recommend|recommended|interesting|novel|fiction|nonfiction)\b/.test(goal);
   const hasFiveItemList =
     /(?:^|\n)\s*1\./.test(assistantText) &&
     /(?:^|\n)\s*2\./.test(assistantText) &&
@@ -245,9 +230,7 @@ export function buildPhaseReminder(
     /proceed systematically/.test(text) ||
     /add (these|the chosen|the selected).*(cart|bag|basket)/.test(text);
   const cartDone =
-    /(added to cart|added them to the cart|cart confirmation|view cart|checkout)/.test(
-      text,
-    );
+    /(added to cart|added them to the cart|cart confirmation|view cart|checkout)/.test(text);
   const explanationDone =
     /here is why i chose/.test(text) ||
     /here are my reasons/.test(text) ||
@@ -265,10 +248,7 @@ export function buildPhaseReminder(
   const falseCartSuccessSignals =
     /added\s+to\s+the\s+cart\s*:\s*["“”'a-z0-9 ,:&-]+|added\s+to\s+cart\s*:\s*["“”'a-z0-9 ,:&-]+|added\s+["“”'a-z0-9 ,:&-]+\s+to the cart|added\s+["“”'a-z0-9 ,:&-]+\s+to cart|added\s+.*\s+by\s+.*\s+to the cart/.test(
       text,
-    ) &&
-    !/(cart confirmation|view cart|shopping cart|checkout|continue shopping)/.test(
-      text,
-    );
+    ) && !/(cart confirmation|view cart|shopping cart|checkout|continue shopping)/.test(text);
   const skippedSingleResultSignals =
     /did not yield a direct match|no direct match|no matches|unavailable on powell|out of stock or unavailable/.test(
       text,
@@ -304,7 +284,13 @@ export function buildPhaseReminder(
     );
   }
 
-  if (wantsCart && wantsBookRecommendations && !selectedItems && !cartDone && missedResultsSignals) {
+  if (
+    wantsCart &&
+    wantsBookRecommendations &&
+    !selectedItems &&
+    !cartDone &&
+    missedResultsSignals
+  ) {
     return (
       `Progress reminder: On a results page, do not use visible_only or generic inspect_element to hunt product results. ` +
       `Call read_page(mode="results_only") once. If Primary Results are shown, click a listed result directly.`
@@ -339,7 +325,12 @@ export function buildPhaseReminder(
     );
   }
 
-  if (wantsCart && wantsBookRecommendations && !cartDone && (multiClickSelectionSignals || staleSelectionSignals)) {
+  if (
+    wantsCart &&
+    wantsBookRecommendations &&
+    !cartDone &&
+    (multiClickSelectionSignals || staleSelectionSignals)
+  ) {
     return (
       `Progress reminder: Do not batch-click multiple results from a listing or category page. ` +
       `Open exactly one visible result, finish that item's Add to Cart flow, confirm success, then use Continue Shopping or go back once to choose the next unseen result. ` +
@@ -363,7 +354,7 @@ export function buildPhaseReminder(
     );
   }
 
-  return '';
+  return "";
 }
 
 /**
@@ -373,22 +364,19 @@ export function buildPhaseReminder(
  */
 export function isSearchContextResettingTool(name: string): boolean {
   return ![
-    'read_page',
-    'current_tab',
-    'list_tabs',
-    'screenshot',
-    'clear_overlays',
-    'accept_cookies',
-    'dismiss_popup',
-    'web_search',
-    'search',
+    "read_page",
+    "current_tab",
+    "list_tabs",
+    "screenshot",
+    "clear_overlays",
+    "accept_cookies",
+    "dismiss_popup",
+    "web_search",
+    "search",
   ].includes(name);
 }
 
-function shouldRecoverCompactStall(
-  text: string,
-  userMessage?: string,
-): boolean {
+function shouldRecoverCompactStall(text: string, userMessage?: string): boolean {
   const trimmed = text.trim().toLowerCase();
   if (!trimmed) return true;
   if (trimmed.length <= 160 && trimmed.includes("?")) return true;
@@ -403,7 +391,7 @@ function shouldRecoverCompactStall(
     "i will now read",
     "i will now click",
     "i'll use readpage",
-    'i\'ll use read_page',
+    "i'll use read_page",
     "i'll start by clicking",
     "i have clicked on five different book titles",
     "clicked on five different book titles",
@@ -473,11 +461,7 @@ export function shouldRetryCompactToolLoop(
   hasToolHistory: boolean,
   userMessage?: string,
 ): boolean {
-  return (
-    profile === 'compact' &&
-    hasToolHistory &&
-    shouldRecoverCompactStall(text, userMessage)
-  );
+  return profile === "compact" && hasToolHistory && shouldRecoverCompactStall(text, userMessage);
 }
 
 function logAgentLoopDebug(payload: Record<string, unknown>): void {
@@ -489,35 +473,32 @@ function logAgentLoopDebug(payload: Record<string, unknown>): void {
   }
 }
 
-export function formatOpenAICompatErrorMessage(
-  providerId: ProviderId,
-  message: string,
-): string {
+export function formatOpenAICompatErrorMessage(providerId: ProviderId, message: string): string {
   if (
-    providerId === 'openrouter' &&
+    providerId === "openrouter" &&
     /(timed out after \d+(?:\.\d+)? seconds|request timed out|returned none after all retries|returned no content|empty response)/i.test(
       message,
     )
   ) {
     return [
       message,
-      'OpenRouter reported an upstream model timeout/no-content failure.',
-      'If this persists, retry or pin a specific low-latency tool-calling model instead of the free router.',
-    ].join(' ');
+      "OpenRouter reported an upstream model timeout/no-content failure.",
+      "If this persists, retry or pin a specific low-latency tool-calling model instead of the free router.",
+    ].join(" ");
   }
 
   if (
-    providerId === 'llama_cpp' &&
+    providerId === "llama_cpp" &&
     /(available context size|context size exceeded|exceeds the available context size|try increasing it)/i.test(
       message,
     )
   ) {
     return [
       message,
-      'llama.cpp sets context size at server startup, not per request.',
+      "llama.cpp sets context size at server startup, not per request.",
       `Vessel's agent prompt plus tool schema is about 6.5k tokens before browsing history, so run llama-server with`,
       `--ctx-size ${LLAMA_CPP_MIN_CTX_TOKENS} minimum (${LLAMA_CPP_RECOMMENDED_CTX_TOKENS} recommended).`,
-    ].join(' ');
+    ].join(" ");
   }
 
   return message;
@@ -534,20 +515,19 @@ export class OpenAICompatProvider implements AIProvider {
 
   constructor(config: ProviderConfig) {
     const meta = PROVIDERS[config.id];
-    const baseURL =
-      config.baseUrl || meta?.defaultBaseUrl || 'https://api.openai.com/v1';
+    const baseURL = resolveProviderBaseUrl(config);
 
-    const isOpenRouter = baseURL.includes('openrouter.ai');
+    const isOpenRouter = baseURL.includes("openrouter.ai");
     this.client = new OpenAI({
-      apiKey: config.apiKey || 'ollama',
+      apiKey: config.apiKey || "ollama",
       baseURL,
       ...(isOpenRouter && {
         defaultHeaders: buildOpenRouterAttributionHeaders(),
       }),
     });
     this.providerId = config.id;
-    this.model = config.model || meta?.defaultModel || 'gpt-4o';
-    this.reasoningEffort = config.reasoningEffort ?? 'off';
+    this.model = config.model || meta?.defaultModel || "gpt-4o";
+    this.reasoningEffort = config.reasoningEffort ?? "off";
     this.agentToolProfile = resolveAgentToolProfile(config);
   }
 
@@ -561,9 +541,11 @@ export class OpenAICompatProvider implements AIProvider {
     this.abortController = new AbortController();
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-      ...(history ?? []).map((m) => ({ role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam)),
-      { role: 'user', content: userMessage },
+      { role: "system", content: systemPrompt },
+      ...(history ?? []).map(
+        (m) => ({ role: m.role, content: m.content }) as OpenAI.Chat.ChatCompletionMessageParam,
+      ),
+      { role: "user", content: userMessage },
     ];
     const reasoningEffort = toOpenAIReasoningEffort(
       this.reasoningEffort,
@@ -603,7 +585,7 @@ export class OpenAICompatProvider implements AIProvider {
         // user sees the model is actively thinking rather than appearing stalled.
         // Providers like llama.cpp expose this as `reasoning_content` on the delta.
         const reasoning = (delta as { reasoning_content?: string })?.reasoning_content;
-        if (typeof reasoning === 'string' && reasoning.length > 0) {
+        if (typeof reasoning === "string" && reasoning.length > 0) {
           onChunk(reasoning);
         }
 
@@ -612,10 +594,8 @@ export class OpenAICompatProvider implements AIProvider {
         }
       }
     } catch (err: unknown) {
-      if (err instanceof Error && err.name !== 'AbortError') {
-        onChunk(
-          `\n\n[Error: ${formatOpenAICompatErrorMessage(this.providerId, err.message)}]`,
-        );
+      if (err instanceof Error && err.name !== "AbortError") {
+        onChunk(`\n\n[Error: ${formatOpenAICompatErrorMessage(this.providerId, err.message)}]`);
       }
     } finally {
       this.abortController = null;
@@ -637,9 +617,11 @@ export class OpenAICompatProvider implements AIProvider {
     const availableToolNames = new Set(tools.map((tool) => tool.name));
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-      ...(history ?? []).map((m) => ({ role: m.role, content: m.content } as OpenAI.Chat.ChatCompletionMessageParam)),
-      { role: 'user', content: userMessage },
+      { role: "system", content: systemPrompt },
+      ...(history ?? []).map(
+        (m) => ({ role: m.role, content: m.content }) as OpenAI.Chat.ChatCompletionMessageParam,
+      ),
+      { role: "user", content: userMessage },
     ];
     const reasoningEffort = toOpenAIReasoningEffort(
       this.reasoningEffort,
@@ -660,19 +642,17 @@ export class OpenAICompatProvider implements AIProvider {
       const clickReadLoopGuard = new ClickReadLoopGuard();
       for (let i = 0; i < maxIterations; i++) {
         iterationsUsed = i + 1;
-        let textAccum = '';
+        let textAccum = "";
         const toolCallAccums: Record<number, { id: string; name: string; argsJson: string }> = {};
         let finishReason: string | null = null;
-        const hasToolHistory = messages.some((message) => message.role === 'tool');
+        const hasToolHistory = messages.some((message) => message.role === "tool");
         const priorToolMessages = messages.filter(
           (message): message is OpenAI.Chat.ChatCompletionToolMessageParam =>
-            message.role === 'tool',
+            message.role === "tool",
         );
         const latestToolMessage =
-          priorToolMessages.length > 0
-            ? priorToolMessages[priorToolMessages.length - 1]
-            : null;
-        const debugRoundLabel = hasToolHistory ? 'post_tool' : 'initial';
+          priorToolMessages.length > 0 ? priorToolMessages[priorToolMessages.length - 1] : null;
+        const debugRoundLabel = hasToolHistory ? "post_tool" : "initial";
 
         const stream = await this.client.chat.completions.create(
           {
@@ -681,7 +661,7 @@ export class OpenAICompatProvider implements AIProvider {
             stream: true,
             messages,
             tools: openAITools,
-            tool_choice: 'auto',
+            tool_choice: "auto",
             temperature: agentTemperatureForProfile(this.agentToolProfile),
             ...openRouterRoutingOptions(this.providerId),
             ...openAIPromptCacheOptions({
@@ -710,7 +690,7 @@ export class OpenAICompatProvider implements AIProvider {
           // is actively thinking. We track the reasoning separately from
           // textAccum so it doesn't pollute the assistant's "spoken" text.
           const reasoning = (delta as { reasoning_content?: string })?.reasoning_content;
-          if (typeof reasoning === 'string' && reasoning.length > 0) {
+          if (typeof reasoning === "string" && reasoning.length > 0) {
             onChunk(reasoning);
           }
 
@@ -723,7 +703,7 @@ export class OpenAICompatProvider implements AIProvider {
             for (const tc of delta.tool_calls) {
               const idx = tc.index;
               if (!toolCallAccums[idx]) {
-                toolCallAccums[idx] = { id: '', name: '', argsJson: '' };
+                toolCallAccums[idx] = { id: "", name: "", argsJson: "" };
               }
               if (tc.id) toolCallAccums[idx].id = tc.id;
               if (tc.function?.name) toolCallAccums[idx].name += tc.function.name;
@@ -738,7 +718,7 @@ export class OpenAICompatProvider implements AIProvider {
         for (const tc of Object.values(toolCallAccums)) {
           if (!tc.id) tc.id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           let parsedArgs: Record<string, unknown> = {};
-          const repairedArgs = parseToolArgsWithRepair(tc.name, tc.argsJson || '{}');
+          const repairedArgs = parseToolArgsWithRepair(tc.name, tc.argsJson || "{}");
           if (repairedArgs) {
             parsedArgs = repairedArgs.args;
             if (repairedArgs.repaired) {
@@ -749,15 +729,12 @@ export class OpenAICompatProvider implements AIProvider {
         }
 
         if (toolCalls.length === 0) {
-          const recoveredToolCalls = recoverAssistantTextToolCalls(
-            textAccum,
-            availableToolNames,
-          );
+          const recoveredToolCalls = recoverAssistantTextToolCalls(textAccum, availableToolNames);
           if (recoveredToolCalls.length > 0) {
             toolCalls = recoveredToolCalls;
             // The raw text containing tool-call JSON was already streamed to
             // the UI. Emit a signal so the renderer collapses it.
-            if (textAccum.trim()) onChunk('<<erase_prev>>');
+            if (textAccum.trim()) onChunk("<<erase_prev>>");
           }
         }
 
@@ -768,7 +745,7 @@ export class OpenAICompatProvider implements AIProvider {
           round: debugRoundLabel,
           priorToolCount: priorToolMessages.length,
           latestToolResultPreview: latestToolMessage
-            ? previewToolDebugContent(String(latestToolMessage.content || ''))
+            ? previewToolDebugContent(String(latestToolMessage.content || ""))
             : null,
           finishReason,
           streamedText: previewDebugValue(textAccum),
@@ -776,7 +753,7 @@ export class OpenAICompatProvider implements AIProvider {
           toolCalls: toolCalls.map((tc) => ({
             id: tc.id,
             name: tc.name,
-            argsJson: previewDebugValue(tc.argsJson || '{}', 300),
+            argsJson: previewDebugValue(tc.argsJson || "{}", 300),
           })),
         });
 
@@ -785,10 +762,10 @@ export class OpenAICompatProvider implements AIProvider {
         // Track which ones were malformed so we can send errors instead of executing
         const malformedToolCalls = new Set<string>();
         for (const tc of toolCalls) {
-          const repairedArgs = parseToolArgsWithRepair(tc.name, tc.argsJson || '{}');
+          const repairedArgs = parseToolArgsWithRepair(tc.name, tc.argsJson || "{}");
           if (!repairedArgs) {
             malformedToolCalls.add(tc.id);
-            tc.argsJson = '{}';
+            tc.argsJson = "{}";
             continue;
           }
           if (repairedArgs.repaired) {
@@ -798,12 +775,12 @@ export class OpenAICompatProvider implements AIProvider {
 
         // Build assistant message for history
         const assistantMsg: OpenAI.Chat.ChatCompletionAssistantMessageParam = {
-          role: 'assistant',
-          content: textAccum || '',
+          role: "assistant",
+          content: textAccum || "",
           ...(toolCalls.length > 0 && {
             tool_calls: toolCalls.map((tc) => ({
               id: tc.id,
-              type: 'function' as const,
+              type: "function" as const,
               function: { name: tc.name, arguments: tc.argsJson },
             })),
           }),
@@ -814,23 +791,19 @@ export class OpenAICompatProvider implements AIProvider {
         // (Some providers like Ollama send finish_reason "stop" even with tool calls)
         if (toolCalls.length === 0) {
           const latestToolResultContent = latestToolMessage
-            ? String(latestToolMessage.content || '')
+            ? String(latestToolMessage.content || "")
             : null;
           if (
             flightPriceEvidenceRecoveryCount < 2 &&
-            shouldBlockUnsupportedFlightPriceAnswer(
-              userMessage,
-              textAccum,
-              latestToolResultContent,
-            )
+            shouldBlockUnsupportedFlightPriceAnswer(userMessage, textAccum, latestToolResultContent)
           ) {
             flightPriceEvidenceRecoveryCount += 1;
-            if (textAccum.trim()) onChunk('<<erase_prev>>');
+            if (textAccum.trim()) onChunk("<<erase_prev>>");
             // Use 'user' role, not 'system' — many models (Qwen, Llama, etc.)
             // require system messages only at position 0 and reject mid-conversation
             // system messages with Jinja template errors.
             messages.push({
-              role: 'user',
+              role: "user",
               content: `[System] ${buildFlightPriceEvidenceRecoveryPrompt(
                 userMessage,
                 textAccum,
@@ -853,7 +826,7 @@ export class OpenAICompatProvider implements AIProvider {
             // require system messages only at position 0 and reject mid-conversation
             // system messages with Jinja template errors.
             messages.push({
-              role: 'user',
+              role: "user",
               content: `[System] ${buildCompactRecoveryPrompt(
                 userMessage,
                 textAccum,
@@ -864,16 +837,12 @@ export class OpenAICompatProvider implements AIProvider {
           }
           if (
             highlightCompletionRecoveryCount < 1 &&
-            shouldRetryUnexecutedHighlightCompletion(
-              userMessage,
-              textAccum,
-              successfulToolNames,
-            )
+            shouldRetryUnexecutedHighlightCompletion(userMessage, textAccum, successfulToolNames)
           ) {
             highlightCompletionRecoveryCount += 1;
-            if (textAccum.trim()) onChunk('<<erase_prev>>');
+            if (textAccum.trim()) onChunk("<<erase_prev>>");
             messages.push({
-              role: 'user',
+              role: "user",
               content: `[System] ${buildHighlightToolCompletionPrompt()}`,
             });
             continue;
@@ -894,14 +863,14 @@ export class OpenAICompatProvider implements AIProvider {
             const hint = unsupportedToolHint(tc.name);
             onChunk(`\n<<tool:${tc.name}:⚠ unsupported>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content: hint,
             });
             compactCorrectionCount += 1;
             if (compactCorrectionCount >= 2) {
               messages.push({
-                role: 'user',
+                role: "user",
                 content: `[System] You are calling unsupported tools. Stop inventing tool names. Use the supported tools you were given and take the next concrete step.`,
               });
             }
@@ -912,7 +881,7 @@ export class OpenAICompatProvider implements AIProvider {
           if (malformedToolCalls.has(tc.id)) {
             onChunk(`\n<<tool:${tc.name}:⚠ invalid args>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content: `Error: Invalid JSON in tool arguments. The arguments could not be parsed. Please retry with valid JSON.`,
             });
@@ -920,11 +889,11 @@ export class OpenAICompatProvider implements AIProvider {
           }
 
           let args: Record<string, unknown> = {};
-          const repairedArgs = parseToolArgsWithRepair(tc.name, tc.argsJson || '{}');
+          const repairedArgs = parseToolArgsWithRepair(tc.name, tc.argsJson || "{}");
           if (!repairedArgs) {
             onChunk(`\n<<tool:${tc.name}:⚠ invalid args>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content: `Error: Invalid JSON in tool arguments. Please retry with valid JSON.`,
             });
@@ -939,14 +908,12 @@ export class OpenAICompatProvider implements AIProvider {
           if (searchLoopCheck) {
             onChunk(`\n<<tool:${tc.name}:↻ duplicate suppressed>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content: buildRepeatedSearchError(
                 searchLoopCheck.previousTool,
                 searchLoopCheck.previousQuery,
-                latestToolMessage
-                  ? String(latestToolMessage.content || '')
-                  : null,
+                latestToolMessage ? String(latestToolMessage.content || "") : null,
                 searchLoopCheck.mode,
               ),
             });
@@ -954,20 +921,20 @@ export class OpenAICompatProvider implements AIProvider {
             continue;
           }
           if (
-            this.agentToolProfile === 'compact' &&
-            tc.name === 'click' &&
+            this.agentToolProfile === "compact" &&
+            tc.name === "click" &&
             isTargetlessClickArgs(args)
           ) {
             onChunk(`\n<<tool:${tc.name}:⚠ missing target>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content:
                 `Error: click requires an element target. Use click with {"index": N} from the latest read_page result, or {"text": "exact visible link/button text"}. ` +
                 `If you do not have a current result index, call read_page(mode="results_only") first and then click one listed result.`,
             });
             messages.push({
-              role: 'user',
+              role: "user",
               content:
                 `[System] Your last click had no target. Do not call click with empty arguments. ` +
                 `Refresh the page state with read_page(mode="results_only") if needed, then click exactly one result by index or exact visible text.`,
@@ -976,43 +943,40 @@ export class OpenAICompatProvider implements AIProvider {
             continue;
           }
           if (
-            this.agentToolProfile === 'compact' &&
-            shouldSuppressDuplicateToolCall(
-              recentCompactToolSignatures,
-              tc.name,
-              toolSignature,
-            )
+            this.agentToolProfile === "compact" &&
+            shouldSuppressDuplicateToolCall(recentCompactToolSignatures, tc.name, toolSignature)
           ) {
             onChunk(`\n<<tool:${tc.name}:↻ duplicate suppressed>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content: buildRepeatedToolCallError(tc.name),
             });
             compactCorrectionCount += 1;
             if (compactCorrectionCount >= 2) {
               messages.push({
-                role: 'user',
+                role: "user",
                 content: REPEATED_TOOL_CALL_NUDGE,
               });
             }
             continue;
           }
           const clickLoopPreflight = clickReadLoopGuard.beforeTool(tc.name);
-          if (clickLoopPreflight?.kind === 'suppress') {
+          if (clickLoopPreflight?.kind === "suppress") {
             onChunk(`\n<<tool:click:↻ loop suppressed>>\n`);
             messages.push({
-              role: 'tool',
+              role: "tool",
               tool_call_id: tc.id,
               content: clickLoopPreflight.message,
             });
             compactCorrectionCount += 1;
             continue;
           }
-          const argSummary = [args.url, args.query, args.text, args.direction]
-            .map((v): string => typeof v === 'string' ? v : '')
-            .find((v) => v.length > 0) ?? '';
-          onChunk(`\n<<tool:${tc.name}${argSummary ? ':' + argSummary : ''}>>\n`);
+          const argSummary =
+            [args.url, args.query, args.text, args.direction]
+              .map((v): string => (typeof v === "string" ? v : ""))
+              .find((v) => v.length > 0) ?? "";
+          onChunk(`\n<<tool:${tc.name}${argSummary ? ":" + argSummary : ""}>>\n`);
           let result: string;
           try {
             result = await onToolCall(tc.name, args);
@@ -1030,15 +994,15 @@ export class OpenAICompatProvider implements AIProvider {
             const parsed = JSON.parse(result);
             if (isRichToolResult(parsed)) {
               toolContent = parsed.content
-                .filter((b): b is TextBlock => b.type === 'text')
+                .filter((b): b is TextBlock => b.type === "text")
                 .map((b) => b.text)
-                .join('\n');
+                .join("\n");
             }
           } catch {
             // Not JSON — use as-is
           }
 
-          if (this.agentToolProfile === 'compact') {
+          if (this.agentToolProfile === "compact") {
             recentCompactToolSignatures.push(toolSignature);
             if (recentCompactToolSignatures.length > 4) {
               recentCompactToolSignatures.shift();
@@ -1048,11 +1012,7 @@ export class OpenAICompatProvider implements AIProvider {
           if (toolSucceeded) {
             successfulToolNames.push(tc.name);
           }
-          searchLoopGuard.recordSuccess(
-            tc.name,
-            searchToolQuery,
-            toolSucceeded,
-          );
+          searchLoopGuard.recordSuccess(tc.name, searchToolQuery, toolSucceeded);
 
           const clickLoopIntervention = clickReadLoopGuard.afterToolResult(
             tc.name,
@@ -1064,12 +1024,12 @@ export class OpenAICompatProvider implements AIProvider {
           iterationToolResultPreviews.push(toolContent);
 
           messages.push({
-            role: 'tool',
+            role: "tool",
             tool_call_id: tc.id,
             content: toolContent,
           });
-          if (clickLoopIntervention?.kind === 'nudge') {
-            messages.push({ role: 'user', content: clickLoopIntervention.message });
+          if (clickLoopIntervention?.kind === "nudge") {
+            messages.push({ role: "user", content: clickLoopIntervention.message });
           }
         }
 
@@ -1086,13 +1046,13 @@ export class OpenAICompatProvider implements AIProvider {
         }
       }
       if (iterationsUsed >= maxIterations) {
-        onChunk(`\n\n[Reached maximum tool call limit (${maxIterations} steps). You can adjust this in Settings → Max Tool Iterations, or continue by sending another message.]`);
+        onChunk(
+          `\n\n[Reached maximum tool call limit (${maxIterations} steps). You can adjust this in Settings → Max Tool Iterations, or continue by sending another message.]`,
+        );
       }
     } catch (err: unknown) {
-      if (err instanceof Error && err.name !== 'AbortError') {
-        onChunk(
-          `\n\n[Error: ${formatOpenAICompatErrorMessage(this.providerId, err.message)}]`,
-        );
+      if (err instanceof Error && err.name !== "AbortError") {
+        onChunk(`\n\n[Error: ${formatOpenAICompatErrorMessage(this.providerId, err.message)}]`);
       }
     } finally {
       this.abortController = null;

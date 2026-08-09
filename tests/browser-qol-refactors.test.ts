@@ -5,10 +5,12 @@ import path from "node:path";
 import ts from "typescript";
 
 import {
+  BROWSER_COMMAND_DEFINITIONS,
   createBrowserCommands,
   getBrowserCommandIdForKeyboardEvent,
   getBrowserCommandShortcutHelp,
 } from "../src/renderer/src/lib/browserCommands";
+import { BROWSER_VIEW_SHORTCUTS, getBrowserShortcutCommand } from "../src/shared/browser-shortcuts";
 import {
   buildAgentTimelineItems,
   formatAgentActionName,
@@ -28,10 +30,7 @@ import {
 } from "../src/shared/devtools";
 import type { AgentRuntimeState } from "../src/shared/types";
 
-function keyEvent(
-  key: string,
-  modifiers: Partial<KeyboardEvent> = {},
-): KeyboardEvent {
+function keyEvent(key: string, modifiers: Partial<KeyboardEvent> = {}): KeyboardEvent {
   return {
     key,
     ctrlKey: false,
@@ -56,6 +55,7 @@ function makeCommandContext() {
     goBack: run,
     goForward: run,
     openBrowserCommandPalette: run,
+    focusAddress: run,
     openCommandBar: run,
     toggleSidebar: run,
     toggleFocusMode: run,
@@ -128,6 +128,14 @@ function makeRuntimeState(): AgentRuntimeState {
 
 test("browser command shortcuts and help use the shared command registry", () => {
   assert.equal(
+    getBrowserCommandIdForKeyboardEvent(keyEvent("l", { ctrlKey: true })),
+    "focus-address",
+  );
+  assert.equal(
+    getBrowserCommandIdForKeyboardEvent(keyEvent("a", { ctrlKey: true, shiftKey: true })),
+    "ask-agent",
+  );
+  assert.equal(
     getBrowserCommandIdForKeyboardEvent(keyEvent("k", { ctrlKey: true })),
     "browser-command-palette",
   );
@@ -135,16 +143,30 @@ test("browser command shortcuts and help use the shared command registry", () =>
     getBrowserCommandIdForKeyboardEvent(keyEvent("?", { shiftKey: true })),
     "keyboard-help",
   );
-  assert.equal(
-    getBrowserCommandIdForKeyboardEvent(keyEvent("f", { ctrlKey: true })),
-    "find-page",
-  );
+  assert.equal(getBrowserCommandIdForKeyboardEvent(keyEvent("f", { ctrlKey: true })), "find-page");
 
-  const privateHelp = getBrowserCommandShortcutHelp(true).map(
-    (shortcut) => shortcut.keys,
-  );
+  const privateHelp = getBrowserCommandShortcutHelp(true).map((shortcut) => shortcut.keys);
   assert.ok(privateHelp.includes("Ctrl+T"));
-  assert.ok(!privateHelp.includes("Ctrl+L"));
+  assert.ok(privateHelp.includes("Ctrl+L"));
+});
+
+test("page-view shortcut interception uses the canonical renderer binding", () => {
+  const focusAddress = BROWSER_COMMAND_DEFINITIONS.find(
+    (definition) => definition.id === "focus-address",
+  );
+  assert.deepEqual(focusAddress?.shortcuts, BROWSER_VIEW_SHORTCUTS["focus-address"].shortcuts);
+  assert.equal(focusAddress?.shortcutLabel, BROWSER_VIEW_SHORTCUTS["focus-address"].label);
+  assert.equal(
+    getBrowserShortcutCommand({
+      alt: false,
+      control: true,
+      key: "l",
+      meta: false,
+      shift: false,
+      type: "keyDown",
+    }),
+    "focus-address",
+  );
 });
 
 test("browser command palette omits hidden keyboard-only commands", () => {
@@ -158,9 +180,7 @@ test("browser command palette omits hidden keyboard-only commands", () => {
 });
 
 test("MCP title-bar indicator uses the shared settings state transition", () => {
-  const titleBarPath = path.resolve(
-    "src/renderer/src/components/chrome/TitleBar.tsx",
-  );
+  const titleBarPath = path.resolve("src/renderer/src/components/chrome/TitleBar.tsx");
   const sourceText = fs.readFileSync(titleBarPath, "utf8");
   const sourceFile = ts.createSourceFile(
     titleBarPath,

@@ -32,12 +32,9 @@ try {
 }
 
 const App: Component = () => {
-  const view =
-    new URLSearchParams(window.location.search).get("view") || "chrome";
-  const isPrivateWindow =
-    new URLSearchParams(window.location.search).get("private") === "1";
-  const isSecondaryWindow =
-    new URLSearchParams(window.location.search).get("secondary") === "1";
+  const view = new URLSearchParams(window.location.search).get("view") || "chrome";
+  const isPrivateWindow = new URLSearchParams(window.location.search).get("private") === "1";
+  const isSecondaryWindow = new URLSearchParams(window.location.search).get("secondary") === "1";
   const isChromeOnlyWindow = isPrivateWindow || isSecondaryWindow;
   const {
     openCommandBar,
@@ -47,16 +44,8 @@ const App: Component = () => {
     openSettings,
     focusMode,
   } = useUI();
-  const {
-    createTab,
-    closeTab,
-    activeTabId,
-    activeTab,
-    zoomIn,
-    zoomOut,
-    zoomReset,
-    reopenClosed,
-  } = useTabs();
+  const { createTab, closeTab, activeTabId, activeTab, zoomIn, zoomOut, zoomReset, reopenClosed } =
+    useTabs();
   const [highlightToast, setHighlightToast] = createSignal<{
     title: string;
     message: string;
@@ -64,22 +53,21 @@ const App: Component = () => {
   const [keyboardHelpOpen, setKeyboardHelpOpen] = createSignal(false);
   const [clearDataOpen, setClearDataOpen] = createSignal(false);
   const [downloadsOpen, setDownloadsOpen] = createSignal(false);
+  const [addressFocusRequest, setAddressFocusRequest] = createSignal(0);
   const loadingPresence = useAnimatedPresence(() => !!activeTab()?.isLoading, 300);
+  const focusAddress = () => setAddressFocusRequest((request) => request + 1);
 
-  const showHighlightResult = (result: {
-    success: boolean;
-    text?: string;
-    message?: string;
-  }) => {
+  const showHighlightResult = (result: { success: boolean; text?: string; message?: string }) => {
     if (result.success && result.text) {
       const preview =
-        result.text.length > MAX_PREVIEW_TEXT ? result.text.slice(0, TRUNCATE_KEEP) + "..." : result.text;
+        result.text.length > MAX_PREVIEW_TEXT
+          ? result.text.slice(0, TRUNCATE_KEEP) + "..."
+          : result.text;
       setHighlightToast({ title: "Highlight saved", message: preview });
     } else {
       setHighlightToast({
         title: "No selection",
-        message:
-          result.message || "Select text on the page first, then press Ctrl+H",
+        message: result.message || "Select text on the page first, then press Ctrl+H",
       });
     }
   };
@@ -130,9 +118,8 @@ const App: Component = () => {
 
     const cleanupKeys = setupKeybindings({
       openCommandBar: isChromeOnlyWindow ? undefined : openCommandBar,
-      openBrowserCommandPalette: isChromeOnlyWindow
-        ? undefined
-        : openBrowserCommandPalette,
+      focusAddress,
+      openBrowserCommandPalette: isChromeOnlyWindow ? undefined : openBrowserCommandPalette,
       toggleSidebar: isChromeOnlyWindow ? undefined : toggleSidebar,
       toggleFocusMode: isChromeOnlyWindow ? undefined : toggleFocusMode,
       newTab: () => createTab(),
@@ -171,25 +158,30 @@ const App: Component = () => {
             window.vessel.devtoolsPanel.toggle();
           },
       toggleKeyboardHelp: () => setKeyboardHelpOpen((v) => !v),
-      togglePip: isChromeOnlyWindow ? undefined : () => {
-        void window.vessel.pip.toggle();
-      },
-      clearBrowsingData: isChromeOnlyWindow ? undefined : () => {
-        setClearDataOpen(true);
-      },
+      togglePip: isChromeOnlyWindow
+        ? undefined
+        : () => {
+            void window.vessel.pip.toggle();
+          },
+      clearBrowsingData: isChromeOnlyWindow
+        ? undefined
+        : () => {
+            setClearDataOpen(true);
+          },
     });
 
     // Listen for Ctrl+H captures triggered from the page view
-    const cleanupCapture = window.vessel.highlights.onCaptureResult(
-      showHighlightResult,
-    );
-    const cleanupClearData =
-      window.vessel.browsingData.onOpenDialog(() => setClearDataOpen(true));
+    const cleanupCapture = window.vessel.highlights.onCaptureResult(showHighlightResult);
+    const cleanupClearData = window.vessel.browsingData.onOpenDialog(() => setClearDataOpen(true));
+    const cleanupBrowserShortcut = window.vessel.ui.onBrowserShortcut((command) => {
+      if (command === "focus-address") focusAddress();
+    });
 
     onCleanup(() => {
       cleanupKeys();
       cleanupCapture();
       cleanupClearData();
+      cleanupBrowserShortcut();
     });
   });
 
@@ -205,7 +197,10 @@ const App: Component = () => {
     <div class="app" classList={{ "focus-mode": focusMode() }}>
       <Show when={!isPrivateWindow}>
         <BookmarkNotifications />
-        <HighlightNotifications toast={highlightToast()} onDismiss={() => setHighlightToast(null)} />
+        <HighlightNotifications
+          toast={highlightToast()}
+          onDismiss={() => setHighlightToast(null)}
+        />
       </Show>
       <DownloadToast />
       <FindBar />
@@ -216,7 +211,10 @@ const App: Component = () => {
       <div class="chrome">
         <TitleBar onOpenDownloads={() => setDownloadsOpen(true)} />
         <TabBar />
-        <AddressBar onClearData={() => setClearDataOpen(true)} />
+        <AddressBar
+          focusRequest={addressFocusRequest()}
+          onClearData={() => setClearDataOpen(true)}
+        />
         <Show when={loadingPresence.visible()}>
           <div class="loading-bar" classList={{ closing: loadingPresence.closing() }} />
         </Show>
@@ -232,10 +230,7 @@ const App: Component = () => {
         <Settings />
       </Show>
       <DownloadsPanel open={downloadsOpen()} onClose={() => setDownloadsOpen(false)} />
-      <ClearBrowsingData
-        open={clearDataOpen()}
-        onClose={() => setClearDataOpen(false)}
-      />
+      <ClearBrowsingData open={clearDataOpen()} onClose={() => setClearDataOpen(false)} />
       <KeyboardHelp
         open={keyboardHelpOpen()}
         onClose={() => setKeyboardHelpOpen(false)}

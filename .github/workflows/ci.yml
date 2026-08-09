@@ -39,8 +39,11 @@ jobs:
       - name: Typecheck
         run: corepack npm run typecheck
 
+      - name: Lint
+        run: corepack npm run lint
+
       - name: Unit tests
-        run: corepack npm run test:coverage
+        run: corepack npm test
 
       - name: Build
         run: corepack npm run build

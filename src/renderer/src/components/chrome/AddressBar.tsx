@@ -21,10 +21,7 @@ import type { PageDiff } from "../../../../shared/page-diff-types";
 import { matchesPageSnapshotUrl } from "../../../../shared/page-url";
 import { parseDiffSummaryParts } from "../../lib/pageDiffDisplay";
 import { formatElapsedTime, formatRelativeTime } from "../../lib/timeDisplay";
-import {
-  SEARCH_ENGINE_PRESETS,
-  type SearchEngineId,
-} from "../../../../shared/types";
+import { SEARCH_ENGINE_PRESETS, type SearchEngineId } from "../../../../shared/types";
 import { Settings as SettingsIcon, Trash2, VenetianMask } from "lucide-solid";
 import "./chrome.css";
 
@@ -36,6 +33,7 @@ interface AutocompleteItem {
 }
 
 const AddressBar: Component<{
+  focusRequest: number;
   onClearData?: () => void;
 }> = (props) => {
   const { activeTab, activeTabId, navigate, goBack, goForward, reload, toggleAdBlock } = useTabs();
@@ -54,27 +52,25 @@ const AddressBar: Component<{
   let inputRef: HTMLInputElement | undefined;
   let addressBlurTimer: ReturnType<typeof setTimeout> | null = null;
   let skipNextAddressBlurSync = false;
+  let handledFocusRequest = props.focusRequest;
 
   onCleanup(() => {
     if (addressBlurTimer) clearTimeout(addressBlurTimer);
   });
 
-  const PADLOCK_PATH = "M7 1a4 4 0 00-4 4v2H1.5a.5.5 0 00-.5.5v5a.5.5 0 00.5.5h11a.5.5 0 00.5-.5v-5a.5.5 0 00-.5-.5H11V5a4 4 0 00-4-4zm0 1a3 3 0 013 3v2H4V5a3 3 0 013-3z";
+  const PADLOCK_PATH =
+    "M7 1a4 4 0 00-4 4v2H1.5a.5.5 0 00-.5.5v5a.5.5 0 00.5.5h11a.5.5 0 00.5-.5v-5a.5.5 0 00-.5-.5H11V5a4 4 0 00-4-4zm0 1a3 3 0 013 3v2H4V5a3 3 0 013-3z";
 
   const securityState = createMemo(() => {
     const tabId = activeTabId();
     return tabId ? getSecurityState(tabId) : undefined;
   });
 
-  const pendingApprovalCount = createMemo(
-    () => runtimeState().supervisor.pendingApprovals.length,
-  );
+  const pendingApprovalCount = createMemo(() => runtimeState().supervisor.pendingApprovals.length);
 
   const searchEnginePreset = createMemo(() => {
     const engine = searchEngine();
-    return engine === "none"
-      ? SEARCH_ENGINE_PRESETS.duckduckgo
-      : SEARCH_ENGINE_PRESETS[engine];
+    return engine === "none" ? SEARCH_ENGINE_PRESETS.duckduckgo : SEARCH_ENGINE_PRESETS[engine];
   });
 
   const buildSearchUrl = (query: string): string =>
@@ -103,7 +99,8 @@ const AddressBar: Component<{
 
   onMount(() => {
     let disposed = false;
-    void window.vessel.settings.get()
+    void window.vessel.settings
+      .get()
       .then((settings) => {
         if (!disposed) {
           setSearchEngine(settings.defaultSearchEngine ?? "duckduckgo");
@@ -144,11 +141,7 @@ const AddressBar: Component<{
   };
 
   const getChangeKindLabel = (kind: PageDiff["changes"][number]["kind"]) =>
-    kind === "added"
-      ? "Added"
-      : kind === "removed"
-        ? "Removed"
-        : "Changed";
+    kind === "added" ? "Added" : kind === "removed" ? "Removed" : "Changed";
 
   createEffect(() => {
     if (isPrivateWindow) return;
@@ -248,19 +241,22 @@ const AddressBar: Component<{
     }
 
     let cancelled = false;
-    void window.vessel.pageDiff.get().then((diff) => {
-      if (cancelled) return;
-      if (!diff || !matchesPageSnapshotUrl(tab.url, diff.url)) {
+    void window.vessel.pageDiff
+      .get()
+      .then((diff) => {
+        if (cancelled) return;
+        if (!diff || !matchesPageSnapshotUrl(tab.url, diff.url)) {
+          setPageDiff(null);
+          setDiffExpanded(false);
+          return;
+        }
+        setPageDiff(diff);
+      })
+      .catch(() => {
+        if (cancelled) return;
         setPageDiff(null);
         setDiffExpanded(false);
-        return;
-      }
-      setPageDiff(diff);
-    }).catch(() => {
-      if (cancelled) return;
-      setPageDiff(null);
-      setDiffExpanded(false);
-    });
+      });
 
     onCleanup(() => {
       cancelled = true;
@@ -272,6 +268,15 @@ const AddressBar: Component<{
     clearTimeout(addressBlurTimer);
     addressBlurTimer = null;
   };
+
+  createEffect(() => {
+    const focusRequest = props.focusRequest;
+    if (focusRequest === handledFocusRequest) return;
+    handledFocusRequest = focusRequest;
+    clearAddressBlurTimer();
+    inputRef?.focus();
+    inputRef?.select();
+  });
 
   const closeAddressSuggestions = () => {
     setShowSuggestions(false);
@@ -354,11 +359,7 @@ const AddressBar: Component<{
   };
 
   const formatSectionLabel = (section: PageDiff["changes"][number]["section"]) =>
-    section === "title"
-      ? "Title"
-      : section === "headings"
-        ? "Headings"
-        : "Content";
+    section === "title" ? "Title" : section === "headings" ? "Headings" : "Content";
 
   return (
     <div class="address-bar">
@@ -438,12 +439,14 @@ const AddressBar: Component<{
                   : "Certificate error"
             }
           >
-            <Switch fallback={
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-                <path d={PADLOCK_PATH} />
-                <circle cx="7" cy="8" r="0.8" fill="white" />
-              </svg>
-            }>
+            <Switch
+              fallback={
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+                  <path d={PADLOCK_PATH} />
+                  <circle cx="7" cy="8" r="0.8" fill="white" />
+                </svg>
+              }
+            >
               <Match when={securityState()?.status === "secure"}>
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
                   <path d={PADLOCK_PATH} />
@@ -492,32 +495,26 @@ const AddressBar: Component<{
               scheduleAddressBlurReset();
             }}
             placeholder="Search or enter URL"
+            aria-label="Address and search"
+            role="combobox"
             spellcheck={false}
             autocomplete="off"
             aria-autocomplete="list"
             aria-expanded={showSuggestions() && suggestions().length > 0}
             aria-controls="address-autocomplete"
             aria-activedescendant={
-              selectedIndex() >= 0
-                ? `address-autocomplete-${selectedIndex()}`
-                : undefined
+              selectedIndex() >= 0 ? `address-autocomplete-${selectedIndex()}` : undefined
             }
           />
         </form>
 
         <Show when={showSuggestions() && suggestions().length > 0}>
-          <div
-            id="address-autocomplete"
-            class="autocomplete-dropdown"
-            role="listbox"
-          >
+          <div id="address-autocomplete" class="autocomplete-dropdown" role="listbox">
             <For each={suggestions()}>
               {(item, i) => (
                 <div
                   id={`address-autocomplete-${i()}`}
-                  class={`autocomplete-item ${
-                    selectedIndex() === i() ? "selected" : ""
-                  }`}
+                  class={`autocomplete-item ${selectedIndex() === i() ? "selected" : ""}`}
                   role="option"
                   aria-selected={selectedIndex() === i()}
                   onMouseDown={(e) => {
@@ -559,9 +556,7 @@ const AddressBar: Component<{
         <div class="page-diff-popup">
           <div class="page-diff-popup-header">
             <div class="page-diff-popup-header-copy">
-              <span>
-                Compared with your last visit
-              </span>
+              <span>Compared with your last visit</span>
               <span class="page-diff-burst-meta">
                 Previous snapshot from {formatRelativeTime(pageDiff()!.oldSnapshot.capturedAt)}
               </span>
@@ -574,10 +569,7 @@ const AddressBar: Component<{
               >
                 <span class="page-diff-burst-meta">
                   Updated {pageDiff()!.burstCount} times over{" "}
-                  {formatElapsedTime(
-                    pageDiff()!.firstDetectedAt!,
-                    pageDiff()!.lastDetectedAt!,
-                  )}
+                  {formatElapsedTime(pageDiff()!.firstDetectedAt!, pageDiff()!.lastDetectedAt!)}
                 </span>
               </Show>
             </div>
@@ -590,18 +582,19 @@ const AddressBar: Component<{
               >
                 Timeline
               </button>
-              <button class="page-diff-popup-close" onClick={() => setDiffExpanded(false)}>&times;</button>
+              <button class="page-diff-popup-close" onClick={() => setDiffExpanded(false)}>
+                &times;
+              </button>
             </div>
           </div>
-          <Show when={pageDiff()!.recentBursts?.length && (pageDiff()!.recentBursts?.length || 0) > 1}>
+          <Show
+            when={pageDiff()!.recentBursts?.length && (pageDiff()!.recentBursts?.length || 0) > 1}
+          >
             <div class="page-diff-burst-history">
               <div class="page-diff-burst-history-label">Recent detections</div>
               <For each={pageDiff()!.recentBursts}>
                 {(burst, i) => (
-                  <div
-                    class="page-diff-burst-row"
-                    classList={{ latest: i() === 0 }}
-                  >
+                  <div class="page-diff-burst-row" classList={{ latest: i() === 0 }}>
                     <span class="page-diff-burst-time">
                       {i() === 0 ? "Latest" : formatRelativeTime(burst.detectedAt)}
                     </span>
@@ -610,9 +603,7 @@ const AddressBar: Component<{
                         {(part) => (
                           <span class="page-diff-burst-summary-part">
                             <Show when={part.section}>
-                              <span class="page-diff-burst-summary-section">
-                                {part.section}
-                              </span>
+                              <span class="page-diff-burst-summary-section">{part.section}</span>
                             </Show>
                             <span>{part.text}</span>
                           </span>
@@ -629,12 +620,8 @@ const AddressBar: Component<{
               <div class={`page-diff-item page-diff-${change.kind}`}>
                 <div class="page-diff-item-header">
                   <div class="page-diff-badges">
-                    <span class="page-diff-kind">
-                      {getChangeKindLabel(change.kind)}
-                    </span>
-                    <span class="page-diff-section">
-                      {formatSectionLabel(change.section)}
-                    </span>
+                    <span class="page-diff-kind">{getChangeKindLabel(change.kind)}</span>
+                    <span class="page-diff-section">{formatSectionLabel(change.section)}</span>
                   </div>
                   <span class="page-diff-summary">{change.summary}</span>
                 </div>
@@ -658,9 +645,7 @@ const AddressBar: Component<{
                   <div class="page-diff-list-group">
                     <span class="page-diff-list-label">Added</span>
                     <ul class="page-diff-list">
-                      <For each={change.addedItems}>
-                        {(item) => <li>{item}</li>}
-                      </For>
+                      <For each={change.addedItems}>{(item) => <li>{item}</li>}</For>
                     </ul>
                   </div>
                 </Show>
@@ -668,9 +653,7 @@ const AddressBar: Component<{
                   <div class="page-diff-list-group">
                     <span class="page-diff-list-label">Removed</span>
                     <ul class="page-diff-list">
-                      <For each={change.removedItems}>
-                        {(item) => <li>{item}</li>}
-                      </For>
+                      <For each={change.removedItems}>{(item) => <li>{item}</li>}</For>
                     </ul>
                   </div>
                 </Show>
@@ -692,7 +675,11 @@ const AddressBar: Component<{
             if (!id) return;
             await toggleAdBlock(id);
           }}
-          title={activeTab()?.adBlockingEnabled ? "Ad Block: On (click to disable)" : "Ad Block: Off (click to enable)"}
+          title={
+            activeTab()?.adBlockingEnabled
+              ? "Ad Block: On (click to disable)"
+              : "Ad Block: Off (click to enable)"
+          }
         >
           <svg width="14" height="14" viewBox="0 0 14 14">
             <Show when={activeTab()?.adBlockingEnabled}>
@@ -712,7 +699,15 @@ const AddressBar: Component<{
                 stroke-width="1.2"
                 stroke-linejoin="round"
               />
-              <line x1="2" y1="12" x2="12" y2="2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              <line
+                x1="2"
+                y1="12"
+                x2="12"
+                y2="2"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
             </Show>
           </svg>
         </button>
@@ -723,42 +718,21 @@ const AddressBar: Component<{
             onClick={() => window.vessel.content.toggleReader()}
             data-tooltip="Reader Mode"
           >
-          <svg width="14" height="14" viewBox="0 0 14 14">
-            <rect
-              x="2"
-              y="1"
-              width="10"
-              height="12"
-              rx="1"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <line
-              x1="4"
-              y1="4"
-              x2="10"
-              y2="4"
-              stroke="currentColor"
-              stroke-width="1"
-            />
-            <line
-              x1="4"
-              y1="6.5"
-              x2="10"
-              y2="6.5"
-              stroke="currentColor"
-              stroke-width="1"
-            />
-            <line
-              x1="4"
-              y1="9"
-              x2="8"
-              y2="9"
-              stroke="currentColor"
-              stroke-width="1"
-            />
-          </svg>
+            <svg width="14" height="14" viewBox="0 0 14 14">
+              <rect
+                x="2"
+                y="1"
+                width="10"
+                height="12"
+                rx="1"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+              />
+              <line x1="4" y1="4" x2="10" y2="4" stroke="currentColor" stroke-width="1" />
+              <line x1="4" y1="6.5" x2="10" y2="6.5" stroke="currentColor" stroke-width="1" />
+              <line x1="4" y1="9" x2="8" y2="9" stroke="currentColor" stroke-width="1" />
+            </svg>
           </button>
         </Show>
         <Show when={!isPrivateWindow}>
@@ -768,33 +742,33 @@ const AddressBar: Component<{
             onClick={toggleDevTools}
             data-tooltip="Dev Tools"
           >
-          <svg width="14" height="14" viewBox="0 0 14 14">
-            <polyline
-              points="3,5 1,7 3,9"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-            <polyline
-              points="11,5 13,7 11,9"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-            <line
-              x1="8.5"
-              y1="2"
-              x2="5.5"
-              y2="12"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-            />
-          </svg>
+            <svg width="14" height="14" viewBox="0 0 14 14">
+              <polyline
+                points="3,5 1,7 3,9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <polyline
+                points="11,5 13,7 11,9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <line
+                x1="8.5"
+                y1="2"
+                x2="5.5"
+                y2="12"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+            </svg>
           </button>
         </Show>
         <Show when={!isPrivateWindow}>
@@ -808,46 +782,31 @@ const AddressBar: Component<{
                 : "AI Sidebar (Ctrl+Shift+L)"
             }
           >
-          <svg width="14" height="14" viewBox="0 0 14 14">
-            <rect
-              x="1"
-              y="1"
-              width="12"
-              height="12"
-              rx="1.5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <line
-              x1="9"
-              y1="1"
-              x2="9"
-              y2="13"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-          </svg>
-          <Show when={pendingApprovalCount() > 0}>
-            <span class="nav-btn-badge" aria-label={`${pendingApprovalCount()} pending`}>
-              {pendingApprovalCount()}
-            </span>
-          </Show>
+            <svg width="14" height="14" viewBox="0 0 14 14">
+              <rect
+                x="1"
+                y="1"
+                width="12"
+                height="12"
+                rx="1.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+              />
+              <line x1="9" y1="1" x2="9" y2="13" stroke="currentColor" stroke-width="1.2" />
+            </svg>
+            <Show when={pendingApprovalCount() > 0}>
+              <span class="nav-btn-badge" aria-label={`${pendingApprovalCount()} pending`}>
+                {pendingApprovalCount()}
+              </span>
+            </Show>
           </button>
         </Show>
         <Show when={!isPrivateWindow}>
-          <button
-            class="nav-btn"
-            onClick={props.onClearData}
-            data-tooltip="Clear Data"
-          >
+          <button class="nav-btn" onClick={props.onClearData} data-tooltip="Clear Data">
             <Trash2 size={14} />
           </button>
-          <button
-            class="nav-btn"
-            onClick={openSettings}
-            data-tooltip="Settings"
-          >
+          <button class="nav-btn" onClick={openSettings} data-tooltip="Settings">
             <SettingsIcon size={14} strokeWidth={1.8} />
           </button>
         </Show>

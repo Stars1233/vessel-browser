@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "path";
 import { Channels } from "../../shared/channels";
 import { loadSettings } from "../config/settings";
-import { upsertDownload } from "./download-manager";
+import { persistentDownloadStore, type DownloadRecordStore } from "./download-manager";
 
 export interface DownloadInfo {
   filename: string;
@@ -42,10 +42,7 @@ export function resolveDownloadPath(downloadDir: string, filename: string): stri
   let attempt = 0;
 
   while (true) {
-    const candidateName =
-      attempt === 0
-        ? safeFilename
-        : `${parsed.name} (${attempt})${parsed.ext}`;
+    const candidateName = attempt === 0 ? safeFilename : `${parsed.name} (${attempt})${parsed.ext}`;
     const candidatePath = path.resolve(rootDir, candidateName);
     if (!isPathInside(rootDir, candidatePath)) {
       throw new Error("Blocked unsafe download filename");
@@ -62,9 +59,7 @@ export function resolveDownloadPath(downloadDir: string, filename: string): stri
  * Downloads are saved to the user's configured downloadPath (or ~/Downloads by default).
  * Progress and completion events are forwarded to the chrome renderer view.
  */
-export function installDownloadHandler(
-  chromeView: WebContentsView,
-): void {
+export function installDownloadHandler(chromeView: WebContentsView): void {
   defaultDownloadViews.add(chromeView);
   if (defaultDownloadHandlerInstalled) return;
   defaultDownloadHandlerInstalled = true;
@@ -78,10 +73,10 @@ export function unregisterDownloadHandler(chromeView: WebContentsView): void {
 export function installDownloadHandlerForSession(
   targetSession: Session,
   chromeView: WebContentsView | ReadonlySet<WebContentsView>,
+  downloadStore: DownloadRecordStore = persistentDownloadStore,
 ): void {
   const send = (channel: string, info: DownloadInfo) => {
-    const views =
-      chromeView instanceof WebContentsView ? [chromeView] : [...chromeView];
+    const views = chromeView instanceof WebContentsView ? [chromeView] : [...chromeView];
     for (const view of views) {
       if (!view.webContents.isDestroyed()) {
         view.webContents.send(channel, info);
@@ -91,9 +86,7 @@ export function installDownloadHandlerForSession(
 
   targetSession.on("will-download", (_event, item) => {
     const settings = loadSettings();
-    const downloadDir =
-      settings.downloadPath.trim() ||
-      app.getPath("downloads");
+    const downloadDir = settings.downloadPath.trim() || app.getPath("downloads");
 
     const filename = item.getFilename();
     try {
@@ -110,24 +103,39 @@ export function installDownloadHandlerForSession(
         state: "progressing",
       };
 
-      const record = upsertDownload(info);
-      send(Channels.DOWNLOAD_STARTED, { ...info, id: record.id, startedAt: record.startedAt, updatedAt: record.updatedAt });
+      const record = downloadStore.upsert(info);
+      send(Channels.DOWNLOAD_STARTED, {
+        ...info,
+        id: record.id,
+        startedAt: record.startedAt,
+        updatedAt: record.updatedAt,
+      });
 
       item.on("updated", (_event, state) => {
         info.receivedBytes = item.getReceivedBytes();
         info.totalBytes = item.getTotalBytes();
         info.state = state === "progressing" ? "progressing" : "interrupted";
 
-        const record = upsertDownload(info);
-        send(Channels.DOWNLOAD_PROGRESS, { ...info, id: record.id, startedAt: record.startedAt, updatedAt: record.updatedAt });
+        const record = downloadStore.upsert(info);
+        send(Channels.DOWNLOAD_PROGRESS, {
+          ...info,
+          id: record.id,
+          startedAt: record.startedAt,
+          updatedAt: record.updatedAt,
+        });
       });
 
       item.once("done", (_event, state) => {
         info.receivedBytes = item.getReceivedBytes();
         info.state = state === "completed" ? "completed" : "cancelled";
 
-        const record = upsertDownload(info);
-        send(Channels.DOWNLOAD_DONE, { ...info, id: record.id, startedAt: record.startedAt, updatedAt: record.updatedAt });
+        const record = downloadStore.upsert(info);
+        send(Channels.DOWNLOAD_DONE, {
+          ...info,
+          id: record.id,
+          startedAt: record.startedAt,
+          updatedAt: record.updatedAt,
+        });
       });
     } catch {
       const fallbackDir = path.resolve(downloadDir);
@@ -141,8 +149,13 @@ export function installDownloadHandlerForSession(
         receivedBytes: item.getReceivedBytes(),
         state: "interrupted",
       };
-      const record = upsertDownload(info);
-      send(Channels.DOWNLOAD_DONE, { ...info, id: record.id, startedAt: record.startedAt, updatedAt: record.updatedAt });
+      const record = downloadStore.upsert(info);
+      send(Channels.DOWNLOAD_DONE, {
+        ...info,
+        id: record.id,
+        startedAt: record.startedAt,
+        updatedAt: record.updatedAt,
+      });
     }
   });
 }
