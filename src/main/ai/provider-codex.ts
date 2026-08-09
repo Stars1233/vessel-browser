@@ -33,11 +33,11 @@ import {
   normalizeSearchToolQuery,
   SearchLoopGuard,
 } from "./search-loop-guard";
+import { CODEX_BACKEND_BASE_URL } from "../../shared/providers";
 
 const logger = createLogger("CodexProvider");
 
 const REFRESH_WINDOW_MS = 5 * 60 * 1000; // refresh if expiring within 5 min
-const CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex";
 export const CODEX_CLIENT_VERSION = "0.129.0";
 
 interface CodexResponsesTool {
@@ -87,7 +87,11 @@ interface CodexStreamAccumulation {
 }
 
 type CodexInputItem =
-  | { type: "message"; role: string; content: Array<{ type: "input_text" | "output_text"; text: string }> }
+  | {
+      type: "message";
+      role: string;
+      content: Array<{ type: "input_text" | "output_text"; text: string }>;
+    }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string };
 
@@ -101,10 +105,7 @@ interface PreparedCodexFunctionCall {
   args: Record<string, unknown>;
 }
 
-function createCodexToolOutput(
-  callId: string,
-  output: string,
-): CodexInputItem {
+function createCodexToolOutput(callId: string, output: string): CodexInputItem {
   return {
     type: "function_call_output",
     call_id: callId,
@@ -134,17 +135,15 @@ function summarizeToolArg(args: Record<string, unknown>): string {
       : typeof args.index === "string" && args.index.trim()
         ? `#${args.index.trim()}`
         : "";
-  return [args.url, args.query, args.text, args.selector, index, args.direction]
-    .map((value): string => typeof value === "string" ? value : "")
-    .find((value) => value.length > 0) ?? "";
+  return (
+    [args.url, args.query, args.text, args.selector, index, args.direction]
+      .map((value): string => (typeof value === "string" ? value : ""))
+      .find((value) => value.length > 0) ?? ""
+  );
 }
 
 function normalizeCodexText(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"');
+  return text.trim().toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
 }
 
 function looksLikeFailedToolOutput(output: string, toolName?: string): boolean {
@@ -163,23 +162,20 @@ function looksLikeFailedToolOutput(output: string, toolName?: string): boolean {
   }
   if (
     toolName === "click" &&
-    (
-      normalized.includes("page did not change after click") ||
-      normalized.includes("element may need a different interaction method")
-    )
+    (normalized.includes("page did not change after click") ||
+      normalized.includes("element may need a different interaction method"))
   ) {
     return true;
   }
-  return (
-    toolName === "type_text" &&
-    /^(?:could not|did not|no focused|no visible)/.test(firstLine)
-  );
+  return toolName === "type_text" && /^(?:could not|did not|no focused|no visible)/.test(firstLine);
 }
 
 function looksLikeTravelFareContext(text: string): boolean {
   const normalized = normalizeCodexText(text);
   return (
-    /\b(?:flight|flights|fare|fares|airline|airlines|one-way|roundtrip|nonstop|layover|departure|arrival)\b/.test(normalized) ||
+    /\b(?:flight|flights|fare|fares|airline|airlines|one-way|roundtrip|nonstop|layover|departure|arrival)\b/.test(
+      normalized,
+    ) ||
     /\b(?:pdx|sfo|oak|sjc)\b/.test(normalized) ||
     /\$[\d,]+/.test(normalized)
   );
@@ -217,8 +213,7 @@ function prepareCodexFunctionCall(
   }
 
   const available = new Set(availableToolNames);
-  const preliminaryArgs =
-    parseToolArgsWithRepair(rawName, argsJson)?.args ?? {};
+  const preliminaryArgs = parseToolArgsWithRepair(rawName, argsJson)?.args ?? {};
   const name = resolveToolCallName(rawName, preliminaryArgs, available);
 
   if (!name || !available.has(name)) {
@@ -288,11 +283,7 @@ export async function createCodexFunctionCallOutput(
   onChunk: (text: string) => void,
   onToolCall: (name: string, args: Record<string, unknown>) => Promise<string>,
 ): Promise<CodexInputItem | CodexTerminalToolResult> {
-  const prepared = prepareCodexFunctionCall(
-    functionCall,
-    availableToolNames,
-    onChunk,
-  );
+  const prepared = prepareCodexFunctionCall(functionCall, availableToolNames, onChunk);
   if ("output" in prepared) return prepared.output;
   return executePreparedCodexFunctionCall(prepared.prepared, onChunk, onToolCall);
 }
@@ -330,9 +321,7 @@ function hasBlockingOverlaySignal(text: string | null): boolean {
  * Build a strict, actionable error for a fabricated clear_overlays call
  * (no blocking overlay signal in the system prompt or latest tool result).
  */
-function buildCodexUnsupportedClearOverlayError(
-  latestToolResultPreview: string | null,
-): string {
+function buildCodexUnsupportedClearOverlayError(latestToolResultPreview: string | null): string {
   const stateReminder = buildLatestStateReminder(latestToolResultPreview);
   const lines = [
     `Error: No blocking overlay signal is present in the latest browser state.`,
@@ -416,10 +405,7 @@ const REAL_PROGRESS_TOOLS = new Set<string>([
   "suggest",
 ]);
 
-function shouldRetryCodexToolLoop(
-  text: string,
-  hasToolHistory: boolean,
-): boolean {
+function shouldRetryCodexToolLoop(text: string, hasToolHistory: boolean): boolean {
   if (!hasToolHistory) return false;
 
   const trimmed = normalizeCodexText(text);
@@ -648,17 +634,16 @@ export class CodexProvider implements AIProvider {
     return headers;
   }
 
-  private buildInput(
-    userMessage: string,
-    history?: AIMessage[],
-  ): CodexInputItem[] {
+  private buildInput(userMessage: string, history?: AIMessage[]): CodexInputItem[] {
     const input: CodexInputItem[] = [];
 
     for (const msg of history ?? []) {
       input.push({
         type: "message",
         role: msg.role,
-        content: [{ type: msg.role === "assistant" ? "output_text" : "input_text", text: msg.content }],
+        content: [
+          { type: msg.role === "assistant" ? "output_text" : "input_text", text: msg.content },
+        ],
       });
     }
 
@@ -734,9 +719,7 @@ export class CodexProvider implements AIProvider {
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(
-        `Codex backend request failed: ${response.status}${text ? ` ${text}` : ""}`,
-      );
+      throw new Error(`Codex backend request failed: ${response.status}${text ? ` ${text}` : ""}`);
     }
 
     if (!response.body) {
@@ -881,10 +864,7 @@ export class CodexProvider implements AIProvider {
         );
 
         if (functionCalls.length === 0) {
-          const recoveredCalls = recoverAssistantTextToolCalls(
-            result.text,
-            availableToolNames,
-          );
+          const recoveredCalls = recoverAssistantTextToolCalls(result.text, availableToolNames);
           if (recoveredCalls.length > 0) {
             if (result.text.trim()) onChunk("<<erase_prev>>");
             functionCalls = recoveredCalls.map((toolCall) => ({
@@ -916,18 +896,11 @@ export class CodexProvider implements AIProvider {
             ];
             continue;
           }
-          if (
-            recoveryCount < 1 &&
-            shouldRetryCodexToolLoop(result.text, toolHistoryCount > 0)
-          ) {
+          if (recoveryCount < 1 && shouldRetryCodexToolLoop(result.text, toolHistoryCount > 0)) {
             recoveryCount += 1;
             if (result.text.trim()) onChunk("<<erase_prev>>");
             currentInput = [
-              buildCodexRecoveryInput(
-                userMessage,
-                result.text,
-                latestToolResultPreview,
-              ),
+              buildCodexRecoveryInput(userMessage, result.text, latestToolResultPreview),
             ];
             continue;
           }
@@ -942,11 +915,7 @@ export class CodexProvider implements AIProvider {
           if (functionCallInput) {
             currentInput.push(functionCallInput);
           }
-          const prepared = prepareCodexFunctionCall(
-            fc,
-            availableToolNames,
-            onChunk,
-          );
+          const prepared = prepareCodexFunctionCall(fc, availableToolNames, onChunk);
           if ("output" in prepared) {
             currentInput.push(prepared.output);
             latestToolResultPreview = previewToolResult(prepared.output.output);
@@ -954,23 +923,15 @@ export class CodexProvider implements AIProvider {
             continue;
           }
 
-          const toolSignature = stableToolSignature(
-            prepared.prepared.name,
-            prepared.prepared.args,
-          );
+          const toolSignature = stableToolSignature(prepared.prepared.name, prepared.prepared.args);
           const searchToolQuery = normalizeSearchToolQuery(
             prepared.prepared.name,
             prepared.prepared.args,
           );
-          const searchLoopCheck = searchLoopGuard.check(
-            prepared.prepared.name,
-            searchToolQuery,
-          );
+          const searchLoopCheck = searchLoopGuard.check(prepared.prepared.name, searchToolQuery);
           const isUnsupportedClearOverlay =
             prepared.prepared.name === "clear_overlays" &&
-            !hasBlockingOverlaySignal(
-              `${systemPrompt}\n${latestToolResultPreview || ""}`,
-            );
+            !hasBlockingOverlaySignal(`${systemPrompt}\n${latestToolResultPreview || ""}`);
           if (searchLoopCheck) {
             onChunk(`\n<<tool:${prepared.prepared.name}:↻ duplicate suppressed>>\n`);
             const output = createCodexToolOutput(
@@ -1016,9 +977,7 @@ export class CodexProvider implements AIProvider {
             continue;
           }
 
-          const clickLoopPreflight = clickReadLoopGuard.beforeTool(
-            prepared.prepared.name,
-          );
+          const clickLoopPreflight = clickReadLoopGuard.beforeTool(prepared.prepared.name);
           if (clickLoopPreflight?.kind === "suppress") {
             onChunk(`\n<<tool:click:↻ loop suppressed>>\n`);
             const suppressed = createCodexToolOutput(
@@ -1057,21 +1016,14 @@ export class CodexProvider implements AIProvider {
           // when a real-progress tool succeeds, so a fresh web_search several
           // turns after the original (with intervening clicks/navigates/inspects)
           // is NOT treated as drift.
-          const toolSucceeded = !looksLikeFailedToolOutput(
-            outputText,
-            prepared.prepared.name,
-          );
+          const toolSucceeded = !looksLikeFailedToolOutput(outputText, prepared.prepared.name);
           if (toolSucceeded && isRealProgressTool(prepared.prepared.name)) {
             // A real-progress tool (navigate, click, inspect, etc.) means the
             // model has used the prior search result in some way, so a future
             // duplicate search is no longer the same stuck pattern.
             failedClickCountSinceProgress = 0;
           }
-          searchLoopGuard.recordSuccess(
-            prepared.prepared.name,
-            searchToolQuery,
-            toolSucceeded,
-          );
+          searchLoopGuard.recordSuccess(prepared.prepared.name, searchToolQuery, toolSucceeded);
           if (
             prepared.prepared.name === "click" &&
             looksLikeFailedToolOutput(outputText, prepared.prepared.name)
@@ -1114,16 +1066,19 @@ export class CodexProvider implements AIProvider {
           currentInput.push({
             type: "message",
             role: "user",
-            content: [{
-              type: "input_text",
-              text:
-                `[System] You are calling unsupported, malformed, or repeated tools. Stop inventing tool names or repeating actions. Use the supported browser tools to take the next concrete step for the original task.`,
-            }],
+            content: [
+              {
+                type: "input_text",
+                text: `[System] You are calling unsupported, malformed, or repeated tools. Stop inventing tool names or repeating actions. Use the supported browser tools to take the next concrete step for the original task.`,
+              },
+            ],
           });
         }
       }
       if (iterationsUsed >= maxIterations) {
-        onChunk(`\n\n[Reached maximum tool call limit (${maxIterations} steps). You can adjust this in Settings → Max Tool Iterations, or continue by sending another message.]`);
+        onChunk(
+          `\n\n[Reached maximum tool call limit (${maxIterations} steps). You can adjust this in Settings → Max Tool Iterations, or continue by sending another message.]`,
+        );
       }
     } catch (err: unknown) {
       if ((err as { name?: string }).name !== "AbortError") {

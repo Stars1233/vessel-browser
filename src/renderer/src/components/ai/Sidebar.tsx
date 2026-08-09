@@ -29,6 +29,7 @@ import {
 } from "../../lib/automation-kits";
 import { renderMarkdown } from "../../lib/markdown";
 import { isPremiumStatus } from "../../lib/premium";
+import { createChatAutoFollow } from "../../lib/chat-scroll";
 import {
   getBookmarkSearchMatch,
   normalizeBookmarkSearchText,
@@ -460,6 +461,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   const handleChatSend = async () => {
     const prompt = chatInput().trim();
     if (!prompt) return;
+    chatAutoFollow.resume();
     setChatCommandError(null);
 
     if (prompt.startsWith("/")) {
@@ -530,6 +532,7 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     // Find the last user message and re-send it
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === "user") {
+        chatAutoFollow.resume();
         void query(msgs[i].content);
         return;
       }
@@ -567,10 +570,8 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
   const [actionsExpanded, setActionsExpanded] = createSignal(false);
   const [isDragging, setIsDragging] = createSignal(false);
   const now = useNow();
-  let messagesContainerRef: HTMLDivElement | undefined;
-  let messagesEndRef: HTMLDivElement | undefined;
+  const chatAutoFollow = createChatAutoFollow();
   let chatInputRef: HTMLTextAreaElement | undefined;
-  let hasInitializedMessageScroll = false;
   const recentActions = createMemo(() => runtimeState().actions.slice(-8).reverse());
   const openAgentTrace = () => {
     void window.vessel.devtoolsPanel.openTab("agentTrace");
@@ -667,25 +668,17 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
     return bookmarksState().bookmarks.some((bookmark) => bookmark.url === tab.url);
   });
 
-  // Auto-scroll to bottom on new messages
+  // Follow new output only while the reader remains near the latest message.
   createEffect(() => {
     messages();
     streamingText();
-    if (!hasInitializedMessageScroll) {
-      hasInitializedMessageScroll = true;
-      return;
-    }
-    messagesEndRef?.scrollIntoView({ behavior: "smooth" });
+    chatAutoFollow.onContentChanged(() => sidebarTab() === "chat");
   });
 
   createEffect(() => {
     const isVisible = props.forceOpen || sidebarOpen();
     if (!isVisible) return;
-    queueMicrotask(() => {
-      if (messagesContainerRef) {
-        messagesContainerRef.scrollTop = 0;
-      }
-    });
+    chatAutoFollow.scrollToStart();
   });
 
   const elapsedSeconds = createMemo(() => {
@@ -1150,9 +1143,10 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
         <div
           class="sidebar-messages"
           ref={(el) => {
-            messagesContainerRef = el;
+            chatAutoFollow.attach(el);
             useScrollFade(el);
           }}
+          onScroll={() => chatAutoFollow.onScroll(sidebarTab() === "chat")}
         >
           <Show when={sidebarTab() === "supervisor"}>
             <section class="agent-panel">
@@ -3012,8 +3006,6 @@ const Sidebar: Component<{ forceOpen?: boolean }> = (props) => {
               </div>
             </Show>
           </Show>
-
-          <div ref={messagesEndRef} />
         </div>
 
         <Show when={sidebarTab() === "chat"}>

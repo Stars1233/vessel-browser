@@ -79,12 +79,11 @@ test("sidebar highlight clear-all IPC removes persisted highlights for the curre
     isDestroyed: () => false,
     isLoading: () => false,
     getURL: () => url,
-    executeJavaScript: async (script: string) =>
-      script.includes("return true") ? true : 0,
+    executeJavaScript: async (script: string) => (script.includes("return true") ? true : 0),
     once: () => undefined,
     send: () => undefined,
   };
-  registerTrustedIpcSender(webContents as never);
+  registerTrustedIpcSender(webContents as never, () => true);
 
   const windowState = {
     tabManager: {
@@ -105,7 +104,7 @@ test("sidebar highlight clear-all IPC removes persisted highlights for the curre
   const handler = ipcMain._handlers.get(Channels.HIGHLIGHT_NAV_CLEAR);
   assert.equal(typeof handler, "function");
 
-  const result = await handler({ sender: webContents });
+  const result = await handler({ sender: webContents, senderFrame: { url } });
 
   assert.equal(result, true);
   assert.equal(highlightsManager.getHighlightsForUrl(url).length, 0);
@@ -146,7 +145,7 @@ test("sidebar highlight remove-current IPC removes the matching persisted highli
     once: () => undefined,
     send: () => undefined,
   };
-  registerTrustedIpcSender(webContents as never);
+  registerTrustedIpcSender(webContents as never, () => true);
 
   const windowState = {
     tabManager: {
@@ -167,7 +166,7 @@ test("sidebar highlight remove-current IPC removes the matching persisted highli
   const handler = ipcMain._handlers.get(Channels.HIGHLIGHT_NAV_REMOVE);
   assert.equal(typeof handler, "function");
 
-  const result = await handler({ sender: webContents }, 0);
+  const result = await handler({ sender: webContents, senderFrame: { url } }, 0);
 
   assert.equal(result, true);
   assert.equal(highlightsManager.getHighlightsForUrl(url).length, 0);

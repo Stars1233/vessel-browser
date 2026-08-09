@@ -24,9 +24,14 @@ async function cleanState(): Promise<void> {
 }
 
 function trustedEvent() {
-  const sender = { id: 501, once: () => undefined, isDestroyed: () => false };
-  registerTrustedIpcSender(sender as never);
-  return { sender };
+  const sender = {
+    id: 501,
+    getURL: () => "file:///app/index.html",
+    once: () => undefined,
+    isDestroyed: () => false,
+  };
+  registerTrustedIpcSender(sender as never, () => true);
+  return { sender, senderFrame: { url: sender.getURL() } };
 }
 
 test("reliability IPC exposes run, conversation, and policy operations", async () => {

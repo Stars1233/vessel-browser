@@ -8,6 +8,7 @@ import { getAirGapBlockReason } from "../config/air-gapped";
 import type { WebContents } from "electron";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
+export const INTERNAL_HTML_DATA_URL_PREFIX = "data:text/html;charset=utf-8,";
 
 /**
  * Returns true if the URL uses an allowed scheme (http or https).
@@ -29,9 +30,7 @@ export function isSafeNavigationURL(url: string): boolean {
  */
 export function assertSafeURL(url: string): void {
   if (!isSafeNavigationURL(url)) {
-    throw new Error(
-      `Blocked navigation to disallowed URL scheme: ${url.slice(0, 80)}`,
-    );
+    throw new Error(`Blocked navigation to disallowed URL scheme: ${url.slice(0, 80)}`);
   }
 }
 
@@ -57,7 +56,7 @@ export function loadPermittedNavigationURL(wc: WebContents, url: string): Promis
 }
 
 export function loadInternalDataURL(wc: WebContents, dataUrl: string): Promise<void> {
-  if (!dataUrl.startsWith("data:text/html;charset=utf-8,")) {
+  if (!dataUrl.startsWith(INTERNAL_HTML_DATA_URL_PREFIX)) {
     throw new Error("Blocked unexpected internal data URL");
   }
   return wc.loadURL(dataUrl);

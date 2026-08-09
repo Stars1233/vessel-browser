@@ -56,8 +56,9 @@ export class AnthropicProvider implements AIProvider {
     apiKey: string,
     model: string,
     reasoningEffort: ReasoningEffortLevel = "off",
+    baseURL?: string,
   ) {
-    this.client = new Anthropic({ apiKey });
+    this.client = new Anthropic({ apiKey, baseURL });
     this.model = model || "claude-sonnet-4-20250514";
     this.reasoningEffort = reasoningEffort;
   }
@@ -72,7 +73,9 @@ export class AnthropicProvider implements AIProvider {
     this.abortController = new AbortController();
 
     const messages: Anthropic.MessageParam[] = [
-      ...(history ?? []).map((m) => ({ role: m.role, content: m.content } as Anthropic.MessageParam)),
+      ...(history ?? []).map(
+        (m) => ({ role: m.role, content: m.content }) as Anthropic.MessageParam,
+      ),
       { role: "user", content: userMessage },
     ];
     const thinking = toAnthropicThinkingConfig(this.reasoningEffort, this.model);
@@ -96,10 +99,7 @@ export class AnthropicProvider implements AIProvider {
             mode: "chat",
           });
         }
-        if (
-          event.type === "content_block_delta" &&
-          event.delta.type === "text_delta"
-        ) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           onChunk(event.delta.text);
         }
       }
@@ -125,7 +125,9 @@ export class AnthropicProvider implements AIProvider {
     this.abortController = new AbortController();
 
     const messages: Anthropic.MessageParam[] = [
-      ...(history ?? []).map((m) => ({ role: m.role, content: m.content } as Anthropic.MessageParam)),
+      ...(history ?? []).map(
+        (m) => ({ role: m.role, content: m.content }) as Anthropic.MessageParam,
+      ),
       { role: "user", content: userMessage },
     ];
     const thinking = toAnthropicThinkingConfig(this.reasoningEffort, this.model);
@@ -194,10 +196,7 @@ export class AnthropicProvider implements AIProvider {
               if (event.delta.type === "text_delta") {
                 textContent += event.delta.text;
                 onChunk(event.delta.text);
-              } else if (
-                event.delta.type === "input_json_delta" &&
-                currentToolUse
-              ) {
+              } else if (event.delta.type === "input_json_delta" && currentToolUse) {
                 currentToolUse.inputJson += event.delta.partial_json;
               }
             } else if (event.type === "content_block_stop" && currentToolUse) {
@@ -292,9 +291,10 @@ export class AnthropicProvider implements AIProvider {
             continue;
           }
 
-          const argSummary = [tb.input.url, tb.input.query, tb.input.text, tb.input.direction]
-            .map((v): string => typeof v === "string" ? v : "")
-            .find((v) => v.length > 0) ?? "";
+          const argSummary =
+            [tb.input.url, tb.input.query, tb.input.text, tb.input.direction]
+              .map((v): string => (typeof v === "string" ? v : ""))
+              .find((v) => v.length > 0) ?? "";
           onChunk(`\n<<tool:${tb.name}${argSummary ? ":" + argSummary : ""}>>\n`);
           let result: string;
           try {
@@ -359,7 +359,9 @@ export class AnthropicProvider implements AIProvider {
         }
       }
       if (iterationsUsed >= maxIterations) {
-        onChunk(`\n\n[Reached maximum tool call limit (${maxIterations} steps). You can adjust this in Settings → Max Tool Iterations, or continue by sending another message.]`);
+        onChunk(
+          `\n\n[Reached maximum tool call limit (${maxIterations} steps). You can adjust this in Settings → Max Tool Iterations, or continue by sending another message.]`,
+        );
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {

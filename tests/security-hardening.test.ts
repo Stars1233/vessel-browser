@@ -293,8 +293,31 @@ test("trusted IPC guard rejects unregistered renderer senders", () => {
 });
 
 test("trusted IPC guard accepts registered app UI senders", () => {
-  registerTrustedIpcSender({ id: 42, once: () => undefined } as never);
-  assert.doesNotThrow(() => assertTrustedIpcSender({ sender: { id: 42 } } as never));
+  registerTrustedIpcSender(
+    { id: 42, once: () => undefined } as never,
+    (url) => url === "file:///app/index.html",
+  );
+  assert.doesNotThrow(() =>
+    assertTrustedIpcSender({
+      sender: { id: 42, getURL: () => "file:///app/index.html" },
+      senderFrame: { url: "file:///app/index.html" },
+    } as never),
+  );
+  assert.throws(
+    () =>
+      assertTrustedIpcSender({
+        sender: { id: 42, getURL: () => "file:///app/index.html" },
+      } as never),
+    /untrusted renderer/,
+  );
+  assert.throws(
+    () =>
+      assertTrustedIpcSender({
+        sender: { id: 42, getURL: () => "https://example.com" },
+        senderFrame: { url: "https://example.com" },
+      } as never),
+    /untrusted renderer/,
+  );
 });
 
 test("managed tab IPC helper rejects unknown webContents senders", () => {

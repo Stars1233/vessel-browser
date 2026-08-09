@@ -21,10 +21,19 @@ import type {
   TabState,
 } from "../../shared/types";
 import { createLogger } from "../../shared/logger";
-import { assertPermittedNavigationURL } from "../network/url-safety";
+import {
+  assertPermittedNavigationURL,
+  INTERNAL_HTML_DATA_URL_PREFIX,
+  loadInternalDataURL,
+} from "../network/url-safety";
+import {
+  createNavigationFailure,
+  isFailurePageUrl,
+  type TabNavigationMode,
+} from "./navigation-state";
 
 const MAX_CUSTOM_HISTORY = 50;
-const READER_MODE_DATA_URL_PREFIX = "data:text/html;charset=utf-8,";
+const READER_MODE_DATA_URL_PREFIX = INTERNAL_HTML_DATA_URL_PREFIX;
 const logger = createLogger("Tab");
 
 // Per-session certificate exception sets, so "proceed anyway" only applies
@@ -85,16 +94,25 @@ export class Tab {
   private urlForwardStack: string[] = [];
   private lastCommittedUrl = "";
   private navigatingViaHistory = false;
+  private navigationMode: TabNavigationMode = { kind: "normal" };
 
   private isReaderModeDataUrl(url: string): boolean {
     return this._state.isReaderMode && url.startsWith(READER_MODE_DATA_URL_PREFIX);
+  }
+
+  private isNavigationFailureDataUrl(url: string): boolean {
+    return isFailurePageUrl(this.navigationMode, url);
   }
 
   private getNavigationBlockReason(url: string): string | null {
     if (!url) {
       return "Blocked navigation to empty URL";
     }
-    if (url.startsWith("about:") || this.isReaderModeDataUrl(url)) {
+    if (
+      url.startsWith("about:") ||
+      this.isReaderModeDataUrl(url) ||
+      this.isNavigationFailureDataUrl(url)
+    ) {
       return null;
     }
     try {
@@ -131,6 +149,8 @@ export class Tab {
       onHighlightRecolor?: (url: string, text: string, color: HighlightColor) => void;
       onSavePage?: () => void;
       onBrowserShortcut?: (command: BrowserShortcutCommand) => void;
+      deferLoad?: boolean;
+      initialTitle?: string;
     },
   ) {
     this.id = id;
@@ -160,7 +180,7 @@ export class Tab {
 
     this._state = {
       id,
-      title: "New Tab",
+      title: options?.initialTitle || "New Tab",
       url: initialUrl,
       favicon: "",
       isLoading: false,
@@ -215,6 +235,18 @@ export class Tab {
 
     this.setupListeners();
     if (url) {
+      if (options?.deferLoad) {
+        const error = this.getNavigationBlockReason(url);
+        if (error) {
+          logger.warn(error);
+          this._state.url = "about:blank";
+          this._state.title = "New Tab";
+        } else {
+          this.navigationMode = { kind: "deferred", url };
+          this.lastCommittedUrl = url;
+        }
+        return;
+      }
       const error = this.guardedLoadURL(url);
       if (error) {
         this._state.url = "about:blank";
@@ -257,8 +289,14 @@ export class Tab {
     });
 
     const syncNavigationState = () => {
-      this._state.title = wc.getTitle() || this._state.title || "New Tab";
-      this._state.url = wc.getURL() || this._state.url;
+      const currentUrl = wc.getURL();
+      if (this.navigationMode.kind === "failure") {
+        this._state.title = "Page unavailable";
+        this._state.url = this.navigationMode.failure.url;
+      } else {
+        this._state.title = wc.getTitle() || this._state.title || "New Tab";
+        this._state.url = currentUrl || this._state.url;
+      }
       this._state.canGoBack = this.urlHistory.length > 0;
       this._state.canGoForward = this.urlForwardStack.length > 0;
       this.onChange();
@@ -279,6 +317,11 @@ export class Tab {
     };
 
     const recordNavigation = (url: string) => {
+      if (this.isNavigationFailureDataUrl(url)) {
+        syncNavigationState();
+        return;
+      }
+      this.navigationMode = { kind: "normal" };
       if (this.navigatingViaHistory) {
         // Back/forward already managed the stacks — just update committed URL
         this.navigatingViaHistory = false;
@@ -305,6 +348,7 @@ export class Tab {
     // Track URL changes for custom history
     wc.on("did-navigate", (_event, url) => {
       recordNavigation(url);
+      if (this.isNavigationFailureDataUrl(url)) return;
       updateSecurityState();
     });
 
@@ -323,6 +367,24 @@ export class Tab {
       syncNavigationState();
     });
 
+    wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame || errorCode === -3) return;
+      if (this.isNavigationFailureDataUrl(validatedURL)) return;
+
+      const failedUrl = validatedURL || this._state.url;
+      const failure = createNavigationFailure(failedUrl, errorDescription);
+      this.navigationMode = { kind: "failure", failure };
+      this._state.title = "Page unavailable";
+      this._state.url = failedUrl;
+      this._state.favicon = "";
+      this._state.isLoading = false;
+      this._securityState = { status: "none", url: failedUrl };
+      this.onChange();
+      void loadInternalDataURL(wc, failure.dataUrl).catch((error) => {
+        logger.error("Failed to load the navigation error page:", error);
+      });
+    });
+
     wc.on("did-navigate-in-page", (_event, url, isMainFrame) => {
       if (!isMainFrame) return;
       recordNavigation(url);
@@ -338,6 +400,7 @@ export class Tab {
 
     wc.on("did-finish-load", () => {
       syncNavigationState();
+      if (this.isNavigationFailureDataUrl(wc.getURL())) return;
       this.onPageLoad?.(wc.getURL(), wc);
     });
 
@@ -540,7 +603,7 @@ export class Tab {
       for (const [key, value] of Object.entries(postBody)) {
         params.set(key, value);
       }
-      return this.guardedLoadURL(url, {
+      const error = this.guardedLoadURL(url, {
         method: "POST",
         extraHeaders: "Content-Type: application/x-www-form-urlencoded\r\n",
         postData: [
@@ -550,8 +613,29 @@ export class Tab {
           },
         ],
       });
+      if (!error && this.navigationMode.kind === "deferred") {
+        this.navigationMode = { kind: "normal" };
+      }
+      return error;
     }
-    return this.guardedLoadURL(url);
+    const error = this.guardedLoadURL(url);
+    if (!error && this.navigationMode.kind === "deferred") {
+      this.navigationMode = { kind: "normal" };
+    }
+    return error;
+  }
+
+  loadDeferred(): void {
+    if (this.navigationMode.kind !== "deferred") return;
+    const url = this.navigationMode.url;
+    this.navigationMode = { kind: "normal" };
+    const error = this.guardedLoadURL(url);
+    if (error) {
+      this._state.url = "about:blank";
+      this._state.title = "New Tab";
+      this.lastCommittedUrl = "";
+      this.onChange();
+    }
   }
 
   goBack(): boolean {
@@ -597,6 +681,14 @@ export class Tab {
   }
 
   reload(): void {
+    if (this.navigationMode.kind === "deferred") {
+      this.loadDeferred();
+      return;
+    }
+    if (this.navigationMode.kind === "failure") {
+      void this.guardedLoadURL(this.navigationMode.failure.url);
+      return;
+    }
     this.view.webContents.reload();
   }
 

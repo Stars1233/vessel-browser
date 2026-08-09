@@ -2,18 +2,26 @@ import type { IpcMainEvent, IpcMainInvokeEvent } from "electron";
 import type { Tab } from "../tabs/tab";
 import type { WebContents } from "electron";
 import { z } from "zod";
+import { isTrustedRendererUrl } from "../startup/renderer";
 
-const trustedIpcSenderIds = new Set<number>();
+const trustedIpcSenders = new Map<number, (url: string) => boolean>();
 
-export function registerTrustedIpcSender(wc: WebContents): void {
-  trustedIpcSenderIds.add(wc.id);
-  wc.once("destroyed", () => trustedIpcSenderIds.delete(wc.id));
+export function registerTrustedIpcSender(
+  wc: WebContents,
+  isTrustedUrl: (url: string) => boolean = isTrustedRendererUrl,
+): void {
+  trustedIpcSenders.set(wc.id, isTrustedUrl);
+  wc.once("destroyed", () => trustedIpcSenders.delete(wc.id));
 }
 
-export function assertTrustedIpcSender(
-  event: IpcMainEvent | IpcMainInvokeEvent,
-): void {
-  if (!trustedIpcSenderIds.has(event.sender.id)) {
+export function assertTrustedIpcSender(event: IpcMainEvent | IpcMainInvokeEvent): void {
+  const isTrustedUrl = trustedIpcSenders.get(event.sender.id);
+  if (!isTrustedUrl) {
+    throw new Error("Blocked IPC from untrusted renderer");
+  }
+  const senderUrl = event.sender.getURL();
+  const frameUrl = event.senderFrame?.url;
+  if (!isTrustedUrl(senderUrl) || !frameUrl || !isTrustedUrl(frameUrl)) {
     throw new Error("Blocked IPC from untrusted renderer");
   }
 }
@@ -28,25 +36,16 @@ export function isManagedTabIpcSender(
 /**
  * Parse an IPC payload with a Zod schema. Throws a clean error on invalid input.
  */
-export function parseIpc<T>(
-  schema: z.ZodSchema<T>,
-  value: unknown,
-  label?: string,
-): T {
+export function parseIpc<T>(schema: z.ZodSchema<T>, value: unknown, label?: string): T {
   const result = schema.safeParse(value);
   if (!result.success) {
     const message = result.error.issues.map((i) => i.message).join("; ");
-    throw new Error(
-      label ? `Invalid ${label}: ${message}` : `Invalid input: ${message}`,
-    );
+    throw new Error(label ? `Invalid ${label}: ${message}` : `Invalid input: ${message}`);
   }
   return result.data;
 }
 
-export function assertString(
-  value: unknown,
-  name: string,
-): asserts value is string {
+export function assertString(value: unknown, name: string): asserts value is string {
   if (typeof value !== "string") throw new Error(`${name} must be a string`);
 }
 
@@ -59,10 +58,7 @@ export function assertOptionalString(
   }
 }
 
-export function assertNumber(
-  value: unknown,
-  name: string,
-): asserts value is number {
+export function assertNumber(value: unknown, name: string): asserts value is number {
   if (typeof value !== "number" || Number.isNaN(value)) {
     throw new Error(`${name} must be a number`);
   }
@@ -83,9 +79,9 @@ export interface ActiveTabInfo {
  * Returns the active tab and its webContents if both are available and the
  * webContents is not destroyed. Returns null otherwise.
  */
-export function getActiveTabInfo(
-  tabManager: { getActiveTab(): Tab | undefined },
-): ActiveTabInfo | null {
+export function getActiveTabInfo(tabManager: {
+  getActiveTab(): Tab | undefined;
+}): ActiveTabInfo | null {
   const tab = tabManager.getActiveTab();
   if (!tab) return null;
   const wc = tab.view.webContents;
@@ -93,10 +89,7 @@ export function getActiveTabInfo(
   return { tab, wc };
 }
 
-export type SendToRendererViews = (
-  channel: string,
-  ...args: unknown[]
-) => void;
+export type SendToRendererViews = (channel: string, ...args: unknown[]) => void;
 
 /**
  * Factory for the common 3-view broadcast pattern (chrome + sidebar + devtools).
@@ -118,11 +111,7 @@ export function createWindowStateMessenger(
  * Safely send an IPC message to a WebContents if it exists and is not destroyed.
  * Logs a debug warning if the target is destroyed.
  */
-export function sendSafe(
-  wc: WebContents | undefined,
-  channel: string,
-  ...args: unknown[]
-): void {
+export function sendSafe(wc: WebContents | undefined, channel: string, ...args: unknown[]): void {
   if (!wc || wc.isDestroyed()) return;
   try {
     wc.send(channel, ...args);

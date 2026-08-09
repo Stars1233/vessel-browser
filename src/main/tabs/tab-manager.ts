@@ -88,7 +88,12 @@ export class TabManager {
 
   createTab(
     url: string = "about:blank",
-    options?: { background?: boolean; adBlockingEnabled?: boolean },
+    options?: {
+      background?: boolean;
+      adBlockingEnabled?: boolean;
+      deferLoad?: boolean;
+      initialTitle?: string;
+    },
   ): string {
     const background = options?.background ?? false;
     const id = randomUUID();
@@ -113,6 +118,8 @@ export class TabManager {
         void this.savePage(id);
       },
       onBrowserShortcut: this.onBrowserShortcut,
+      deferLoad: options?.deferLoad,
+      initialTitle: options?.initialTitle,
     });
     this.tabs.set(id, tab);
     this.order.push(id);
@@ -138,6 +145,7 @@ export class TabManager {
     }
 
     this.activeTabId = id;
+    this.tabs.get(id)?.loadDeferred();
     this.broadcastState({ persistSession: true });
   }
 
@@ -436,6 +444,8 @@ export class TabManager {
       this.createTab(tab.url || "about:blank", {
         background: index !== activeIndex,
         adBlockingEnabled: tab.adBlockingEnabled ?? true,
+        deferLoad: index !== activeIndex,
+        initialTitle: tab.title,
       }),
     );
 

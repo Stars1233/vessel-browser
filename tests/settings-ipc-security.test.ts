@@ -3,20 +3,26 @@ import test from "node:test";
 import { ipcMain } from "electron";
 
 import { flushPersist, setSetting } from "../src/main/config/settings";
+import {
+  normalizeProviderEndpointOrigin,
+  resolveProviderSecretForLoad,
+} from "../src/main/config/provider-secrets";
 import { registerSettingsHandlers } from "../src/main/ipc/settings";
 import { registerTrustedIpcSender } from "../src/main/ipc/common";
 import { isPremium } from "../src/main/premium/manager";
 import { Channels } from "../src/shared/channels";
+import { resolveProviderBaseUrl } from "../src/shared/providers";
 import type { PremiumState } from "../src/shared/types";
 
 function registerSettingsIpcForTest() {
   const webContents = {
     id: 9001,
+    getURL: () => "file:///app/index.html",
     isDestroyed: () => false,
     once: () => undefined,
     send: () => undefined,
   };
-  registerTrustedIpcSender(webContents as never);
+  registerTrustedIpcSender(webContents as never, () => true);
 
   registerSettingsHandlers(
     {} as never,
@@ -32,7 +38,7 @@ function registerSettingsIpcForTest() {
 
   return {
     handler,
-    event: { sender: webContents },
+    event: { sender: webContents, senderFrame: { url: webContents.getURL() } },
   };
 }
 
@@ -105,4 +111,80 @@ test("renderer settings IPC validates supported history retention periods", asyn
     setSetting("telemetryEnabled", true);
     await flushPersist();
   }
+});
+
+test("stored provider keys remain bound to their endpoint origin", async () => {
+  const { handler, event } = registerSettingsIpcForTest();
+  setSetting("telemetryEnabled", false);
+  try {
+    const initial = await handler(event, "chatProvider", {
+      id: "custom",
+      apiKey: "endpoint-secret",
+      model: "local-model",
+      baseUrl: "http://localhost:8080/v1",
+    });
+    assert.equal(initial.chatProvider.hasApiKey, true);
+
+    const sameOrigin = await handler(event, "chatProvider", {
+      id: "custom",
+      apiKey: "",
+      hasApiKey: true,
+      model: "local-model",
+      baseUrl: "http://localhost:8080/alternate-path",
+    });
+    assert.equal(sameOrigin.chatProvider.hasApiKey, true);
+
+    await assert.rejects(
+      () =>
+        handler(event, "chatProvider", {
+          id: "custom",
+          apiKey: "",
+          hasApiKey: true,
+          model: "local-model",
+          baseUrl: "http://localhost:9090/v1",
+        }),
+      /Re-enter the API key/,
+    );
+    assert.throws(
+      () =>
+        normalizeProviderEndpointOrigin({
+          id: "custom",
+          baseUrl: "http://provider.example/v1",
+        }),
+      /must use HTTPS/,
+    );
+  } finally {
+    setSetting("chatProvider", null);
+    setSetting("telemetryEnabled", true);
+    await flushPersist();
+  }
+});
+
+test("unsafe legacy providers are quarantined without throwing away other settings", () => {
+  const result = resolveProviderSecretForLoad(
+    {
+      id: "custom",
+      apiKey: "legacy-secret",
+      model: "legacy-model",
+      baseUrl: "http://provider.example/v1",
+    },
+    {
+      providerId: "custom",
+      apiKey: "stored-secret",
+    },
+  );
+
+  assert.equal(result.provider, null);
+  assert.match(result.issue ?? "", /must use HTTPS/);
+  assert.equal(result.secretToPersist, undefined);
+});
+
+test("provider requests and secret binding share one endpoint resolver", () => {
+  assert.equal(resolveProviderBaseUrl({ id: "anthropic" }), "https://api.anthropic.com");
+  assert.equal(resolveProviderBaseUrl({ id: "openai" }), "https://api.openai.com/v1");
+  assert.equal(
+    resolveProviderBaseUrl({ id: "openai_codex" }),
+    "https://chatgpt.com/backend-api/codex",
+  );
+  assert.equal(normalizeProviderEndpointOrigin({ id: "openai" }), "https://api.openai.com");
 });

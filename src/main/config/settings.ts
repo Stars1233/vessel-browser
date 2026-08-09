@@ -27,6 +27,11 @@ import {
   sanitizeDevToolsDetachedBounds,
 } from "../../shared/devtools";
 import { normalizeHistoryRetentionDays } from "../../shared/run-types";
+import {
+  resolveProviderSecretForLoad,
+  resolveProviderSecretForUpdate,
+  type StoredProviderSecret,
+} from "./provider-secrets";
 
 const defaults: VesselSettings = {
   defaultUrl: "https://start.duckduckgo.com",
@@ -176,11 +181,6 @@ function getChatProviderSecretPath(): string {
   return path.join(getUserDataPath(), CHAT_PROVIDER_SECRET_FILENAME);
 }
 
-type StoredProviderSecret = {
-  providerId: ProviderConfig["id"];
-  apiKey: string;
-};
-
 function canUseSafeStorage(): boolean {
   try {
     return safeStorage.isEncryptionAvailable();
@@ -295,20 +295,31 @@ function mergeChatProviderSecret(
   provider: ProviderConfig | null | undefined,
 ): ProviderConfig | null {
   if (!provider) return null;
-
-  const stored = readStoredProviderSecret();
-  const legacyApiKey = provider.apiKey?.trim() || "";
-  const apiKey = stored?.providerId === provider.id ? stored.apiKey : legacyApiKey;
-
-  if (legacyApiKey && stored?.providerId !== provider.id) {
-    writeStoredProviderSecret({ providerId: provider.id, apiKey: legacyApiKey });
+  const result = resolveProviderSecretForLoad(provider, readStoredProviderSecret());
+  if (result.issue) {
+    settingsIssues.push({
+      code: "settings-invalid-chat-provider-endpoint",
+      severity: "warning",
+      title: "AI provider needs to be reconfigured",
+      detail: result.issue,
+      action:
+        "The remaining settings were preserved. Choose a secure provider endpoint and re-enter its API key.",
+    });
   }
-
-  return {
-    ...provider,
-    apiKey,
-    hasApiKey: Boolean(apiKey),
-  };
+  if (result.secretToPersist) {
+    try {
+      writeStoredProviderSecret(result.secretToPersist);
+    } catch (error) {
+      settingsIssues.push({
+        code: "settings-provider-secret-migration-failed",
+        severity: "warning",
+        title: "Could not migrate the AI provider key",
+        detail: error instanceof Error ? error.message : "Unknown secure storage error.",
+        action: "The remaining settings were preserved. Re-enter the API key if it is unavailable.",
+      });
+    }
+  }
+  return result.provider;
 }
 
 function buildPersistedSettings(source: VesselSettings): VesselSettings {
@@ -496,27 +507,11 @@ export function setSetting<K extends keyof VesselSettings>(
       clearStoredProviderSecret();
       settings!.chatProvider = null;
     } else {
-      const existingSecret = readStoredProviderSecret();
-      const incomingApiKey = nextProvider.apiKey.trim();
-      const preserveExisting =
-        !incomingApiKey &&
-        nextProvider.hasApiKey === true &&
-        existingSecret?.providerId === nextProvider.id;
-      const resolvedApiKey = preserveExisting ? existingSecret?.apiKey || "" : incomingApiKey;
-
-      if (resolvedApiKey) {
-        writeStoredProviderSecret({
-          providerId: nextProvider.id,
-          apiKey: resolvedApiKey,
-        });
-      } else {
-        clearStoredProviderSecret();
-      }
-
+      const resolved = resolveProviderSecretForUpdate(nextProvider, readStoredProviderSecret());
+      if (resolved.secret) writeStoredProviderSecret(resolved.secret);
+      else clearStoredProviderSecret();
       settings!.chatProvider = {
-        ...nextProvider,
-        apiKey: resolvedApiKey,
-        hasApiKey: Boolean(resolvedApiKey),
+        ...resolved.provider,
         reasoningEffort: sanitizeReasoningEffortLevel(nextProvider.reasoningEffort),
       };
     }

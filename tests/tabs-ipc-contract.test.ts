@@ -9,11 +9,12 @@ import { Channels } from "../src/shared/channels";
 function registerTabsIpcForTest() {
   const webContents = {
     id: 9101,
+    getURL: () => "file:///app/index.html",
     isDestroyed: () => false,
     once: () => undefined,
     send: () => undefined,
   };
-  registerTrustedIpcSender(webContents as never);
+  registerTrustedIpcSender(webContents as never, () => true);
 
   const calls = {
     navigate: [] as Array<{
@@ -28,11 +29,7 @@ function registerTabsIpcForTest() {
     createTab: () => "tab-created",
     closeTab: () => undefined,
     switchTab: () => undefined,
-    navigateTab: (
-      id: string,
-      url: string,
-      postBody?: Record<string, string>,
-    ) => {
+    navigateTab: (id: string, url: string, postBody?: Record<string, string>) => {
       calls.navigate.push({ id, url, postBody });
     },
     goBack: () => undefined,
@@ -90,7 +87,7 @@ function registerTabsIpcForTest() {
 
   return {
     calls,
-    event: { sender: webContents },
+    event: { sender: webContents, senderFrame: { url: webContents.getURL() } },
   };
 }
 
