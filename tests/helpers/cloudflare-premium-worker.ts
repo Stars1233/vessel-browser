@@ -9,10 +9,7 @@ export const OPENROUTER_API = "https://openrouter.ai/api/v1";
 export const WORKER_URL = "https://premium.example";
 export const nowSeconds = () => Math.floor(Date.now() / 1000);
 
-type MockFetchHandler = (
-  url: string,
-  init?: RequestInit,
-) => unknown | Promise<unknown>;
+type MockFetchHandler = (url: string, init?: RequestInit) => unknown | Promise<unknown>;
 
 export const env = {
   STRIPE_SECRET_KEY: "sk_test",
@@ -26,11 +23,7 @@ export const env = {
 
 export function createMemoryKv(): {
   get: (key: string) => Promise<string | null>;
-  put: (
-    key: string,
-    value: string,
-    options?: { expirationTtl?: number },
-  ) => Promise<void>;
+  put: (key: string, value: string, options?: { expirationTtl?: number }) => Promise<void>;
 } {
   const store = new Map<string, string>();
   return {
@@ -57,21 +50,35 @@ export function createMemorySecurityGuard(): {
       if (!guard) {
         const values = new Map<string, unknown>();
         const storage = {
-          transaction<T>(callback: (transaction: {
-            get: (key: string) => Promise<unknown>;
-            put: (key: string, value: unknown) => Promise<void>;
-          }) => Promise<T>): Promise<T> {
+          transaction<T>(
+            callback: (transaction: {
+              get: (key: string) => Promise<unknown>;
+              put: (key: string, value: unknown) => Promise<void>;
+            }) => Promise<T>,
+          ): Promise<T> {
             const result = (queues.get(name) || Promise.resolve()).then(() =>
               callback({
-                async get(key: string) { return values.get(key); },
-                async put(key: string, value: unknown) { values.set(key, value); },
+                async get(key: string) {
+                  return values.get(key);
+                },
+                async put(key: string, value: unknown) {
+                  values.set(key, value);
+                },
               }),
             );
-            queues.set(name, result.then(() => undefined, () => undefined));
+            queues.set(
+              name,
+              result.then(
+                () => undefined,
+                () => undefined,
+              ),
+            );
             return result;
           },
           async setAlarm() {},
-          async deleteAll() { values.clear(); },
+          async deleteAll() {
+            values.clear();
+          },
         };
         guard = new ActivationAttemptGuard({ storage });
         guards.set(name, guard);
@@ -145,7 +152,7 @@ export async function postJsonWithEnv(
 }
 
 export async function createPremiumToken(customerId = "cus_test"): Promise<string> {
-  const kv = createMemoryKv();
+  const bindings = createActivationBindings();
   return withMockFetch(
     (url) => {
       if (url === `${STRIPE_API}/checkout/sessions/cs_test`) {
@@ -165,12 +172,8 @@ export async function createPremiumToken(customerId = "cus_test"): Promise<strin
       throw new Error(`Unexpected fetch: ${url}`);
     },
     async () => {
-      const response = await postJsonWithEnv(
-        "/verify",
-        { identifier: "cs_test" },
-        { ACTIVATION_KV: kv },
-      );
-      const data = await response.json() as { verificationToken?: string };
+      const response = await postJsonWithEnv("/verify", { identifier: "cs_test" }, bindings);
+      const data = (await response.json()) as { verificationToken?: string };
       assert.equal(response.status, 200);
       assert.equal(typeof data.verificationToken, "string");
       return data.verificationToken!;
@@ -183,14 +186,14 @@ function base64Url(value: string | Uint8Array): string {
   return Buffer.from(bytes).toString("base64url");
 }
 
-export async function createSignedPremiumToken(
-  payload: Record<string, unknown>,
-): Promise<string> {
-  const header = base64Url(JSON.stringify({
-    alg: "HS256",
-    typ: "JWT",
-    purpose: "premium-access",
-  }));
+export async function createSignedPremiumToken(payload: Record<string, unknown>): Promise<string> {
+  const header = base64Url(
+    JSON.stringify({
+      alg: "HS256",
+      typ: "JWT",
+      purpose: "premium-access",
+    }),
+  );
   const body = base64Url(JSON.stringify(payload));
   const key = await crypto.subtle.importKey(
     "raw",
@@ -209,10 +212,7 @@ export async function createSignedPremiumToken(
 
 export async function usageKey(subject: string): Promise<string> {
   const normalized = subject.trim().toLowerCase();
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(normalized),
-  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
   const hash = Buffer.from(digest).toString("hex");
   const now = new Date();
   const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;

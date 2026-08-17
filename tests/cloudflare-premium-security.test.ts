@@ -6,6 +6,7 @@ import {
   OPENROUTER_API,
   STRIPE_API,
   WORKER_URL,
+  createActivationBindings,
   createMemoryKv,
   createMemorySecurityGuard,
   createPremiumToken,
@@ -18,10 +19,7 @@ import {
   withMockFetch,
 } from "./helpers/cloudflare-premium-worker.js";
 
-function makeAiRequest(
-  token: string,
-  bindings: Record<string, unknown>,
-): Promise<Response> {
+function makeAiRequest(token: string, bindings: Record<string, unknown>): Promise<Response> {
   return worker.fetch(
     new Request(`${WORKER_URL}/ai/chat/completions`, {
       method: "POST",
@@ -50,14 +48,14 @@ test("premium worker preserves the original Google Play token expiry on entitlem
   });
 
   const first = await postJson("/entitlement", { identifier: token });
-  const firstData = await first.json() as {
+  const firstData = (await first.json()) as {
     verificationToken?: string;
     expiresAt?: string;
   };
   const second = await postJson("/entitlement", {
     identifier: firstData.verificationToken,
   });
-  const secondData = await second.json() as {
+  const secondData = (await second.json()) as {
     verificationToken?: string;
     expiresAt?: string;
   };
@@ -75,13 +73,16 @@ test("premium worker atomically reserves AI budget before concurrent provider ca
   const guard = createMemorySecurityGuard();
   const token = await createPremiumToken("cus_ai_concurrent");
   const key = await usageKey("cus_ai_concurrent");
-  await kv.put(key, JSON.stringify({
-    period: key.split(":")[1],
-    requests: 10,
-    estimatedCostUsd: 4.997,
-    promptTokens: 1000,
-    completionTokens: 1000,
-  }));
+  await kv.put(
+    key,
+    JSON.stringify({
+      period: key.split(":")[1],
+      requests: 10,
+      estimatedCostUsd: 4.997,
+      promptTokens: 1000,
+      completionTokens: 1000,
+    }),
+  );
   let upstreamCalls = 0;
 
   await withMockFetch(
@@ -129,13 +130,16 @@ test("premium worker releases AI reservations after failed provider responses", 
   const guard = createMemorySecurityGuard();
   const token = await createPremiumToken("cus_ai_release");
   const key = await usageKey("cus_ai_release");
-  await kv.put(key, JSON.stringify({
-    period: key.split(":")[1],
-    requests: 10,
-    estimatedCostUsd: 4.997,
-    promptTokens: 1000,
-    completionTokens: 1000,
-  }));
+  await kv.put(
+    key,
+    JSON.stringify({
+      period: key.split(":")[1],
+      requests: 10,
+      estimatedCostUsd: 4.997,
+      promptTokens: 1000,
+      completionTokens: 1000,
+    }),
+  );
   let upstreamCalls = 0;
 
   await withMockFetch(
@@ -174,13 +178,17 @@ test("premium worker charges the reservation estimate for malformed provider usa
       if (url === `${STRIPE_API}/customers/cus_ai_malformed_usage`) {
         return { id: "cus_ai_malformed_usage", email: "premium@example.com" };
       }
-      if (url === `${STRIPE_API}/subscriptions?customer=cus_ai_malformed_usage&status=all&limit=10`) {
+      if (
+        url === `${STRIPE_API}/subscriptions?customer=cus_ai_malformed_usage&status=all&limit=10`
+      ) {
         return {
-          data: [{
-            id: "sub_active",
-            status: "active",
-            current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
-          }],
+          data: [
+            {
+              id: "sub_active",
+              status: "active",
+              current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
+            },
+          ],
         };
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -189,12 +197,8 @@ test("premium worker charges the reservation estimate for malformed provider usa
       const bindings = { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard };
       assert.equal((await makeAiRequest(token, bindings)).status, 200);
 
-      const entitlement = await postJsonWithEnv(
-        "/entitlement",
-        { identifier: token },
-        bindings,
-      );
-      const data = await entitlement.json() as {
+      const entitlement = await postJsonWithEnv("/entitlement", { identifier: token }, bindings);
+      const data = (await entitlement.json()) as {
         usage?: { requests?: number; estimatedCostUsd?: number };
       };
       assert.equal(data.usage?.requests, 1);
@@ -215,12 +219,14 @@ test("premium worker serializes concurrent feedback rate-limit decisions", async
     },
     async () => {
       const responses = await Promise.all(
-        Array.from({ length: 12 }, (_, index) => postJsonWithEnv(
-          "/feedback",
-          { email: "user@example.com", message: `Concurrent feedback ${index}` },
-          { ACTIVATION_KV: createMemoryKv(), ACTIVATION_GUARD: guard },
-          { "cf-connecting-ip": "203.0.113.20" },
-        )),
+        Array.from({ length: 12 }, (_, index) =>
+          postJsonWithEnv(
+            "/feedback",
+            { email: "user@example.com", message: `Concurrent feedback ${index}` },
+            { ACTIVATION_KV: createMemoryKv(), ACTIVATION_GUARD: guard },
+            { "cf-connecting-ip": "203.0.113.20" },
+          ),
+        ),
       );
 
       assert.equal(responses.filter((response) => response.status === 200).length, 5);
@@ -249,18 +255,123 @@ test("premium worker rate limits concurrent activation-code issuance before Stri
     },
     async () => {
       const responses = await Promise.all(
-        Array.from({ length: 12 }, () => postJsonWithEnv(
-          "/activate/start",
-          { email: "premium@example.com" },
-          { ACTIVATION_KV: createMemoryKv(), ACTIVATION_GUARD: guard },
-          { "cf-connecting-ip": "203.0.113.30" },
-        )),
+        Array.from({ length: 12 }, () =>
+          postJsonWithEnv(
+            "/activate/start",
+            { email: "premium@example.com" },
+            { ACTIVATION_KV: createMemoryKv(), ACTIVATION_GUARD: guard },
+            { "cf-connecting-ip": "203.0.113.30" },
+          ),
+        ),
       );
 
       assert.equal(responses.filter((response) => response.status === 200).length, 5);
       assert.equal(responses.filter((response) => response.status === 429).length, 7);
       assert.equal(stripeCalls, 15);
       assert.equal(resendCalls, 0);
+    },
+  );
+});
+
+test("premium worker rate limits concurrent checkout creation before Stripe", async () => {
+  const guard = createMemorySecurityGuard();
+  let stripeCalls = 0;
+
+  await withMockFetch(
+    (url) => {
+      assert.equal(url, `${STRIPE_API}/checkout/sessions`);
+      stripeCalls += 1;
+      return { url: `https://checkout.stripe.test/session-${stripeCalls}` };
+    },
+    async () => {
+      const responses = await Promise.all(
+        Array.from({ length: 12 }, () =>
+          worker.fetch(
+            new Request(`${WORKER_URL}/checkout`, {
+              method: "POST",
+              headers: { "cf-connecting-ip": "203.0.113.40" },
+            }),
+            { ...env, ACTIVATION_GUARD: guard },
+          ),
+        ),
+      );
+
+      assert.equal(responses.filter((response) => response.status === 200).length, 10);
+      assert.equal(responses.filter((response) => response.status === 429).length, 2);
+      assert.equal(stripeCalls, 10);
+    },
+  );
+});
+
+test("premium worker serializes concurrent checkout redemption", async () => {
+  const bindings = createActivationBindings();
+  let checkoutFetches = 0;
+
+  await withMockFetch(
+    async (url) => {
+      if (url === `${STRIPE_API}/checkout/sessions/cs_concurrent`) {
+        checkoutFetches += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { customer: "cus_test", subscription: "sub_trial" };
+      }
+      if (url === `${STRIPE_API}/subscriptions/sub_trial`) {
+        return {
+          id: "sub_trial",
+          status: "trialing",
+          trial_end: nowSeconds() + 7 * 24 * 60 * 60,
+          current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
+        };
+      }
+      if (url === `${STRIPE_API}/customers/cus_test`) {
+        return { id: "cus_test", email: "premium@example.com" };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+    async () => {
+      const responses = await Promise.all([
+        postJsonWithEnv("/verify", { identifier: "cs_concurrent" }, bindings),
+        postJsonWithEnv("/verify", { identifier: "cs_concurrent" }, bindings),
+      ]);
+
+      assert.equal(responses.filter((response) => response.status === 200).length, 1);
+      assert.equal(responses.filter((response) => response.status === 409).length, 1);
+      assert.equal(checkoutFetches, 1);
+    },
+  );
+});
+
+test("premium worker caps Stripe token lifetime to subscription access", async () => {
+  const accessEndsAt = nowSeconds() + 5 * 60;
+  const bindings = createActivationBindings();
+
+  await withMockFetch(
+    (url) => {
+      if (url === `${STRIPE_API}/checkout/sessions/cs_short_lived`) {
+        return { customer: "cus_test", subscription: "sub_short" };
+      }
+      if (url === `${STRIPE_API}/subscriptions/sub_short`) {
+        return {
+          id: "sub_short",
+          status: "active",
+          current_period_end: accessEndsAt,
+        };
+      }
+      if (url === `${STRIPE_API}/customers/cus_test`) {
+        return { id: "cus_test", email: "premium@example.com" };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+    async () => {
+      const response = await postJsonWithEnv("/verify", { identifier: "cs_short_lived" }, bindings);
+      const data = (await response.json()) as { verificationToken?: string };
+      const payloadPart = data.verificationToken?.split(".")[1] || "";
+      const payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as {
+        exp: number;
+      };
+
+      assert.equal(response.status, 200);
+      assert.ok(payload.exp <= accessEndsAt * 1000);
+      assert.ok(payload.exp > Date.now());
     },
   );
 });

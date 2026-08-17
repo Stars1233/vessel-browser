@@ -1,6 +1,7 @@
 import {
   applyActivationAttempt,
   applyAiBudget,
+  applyCheckoutRedemption,
   applyRateLimit,
 } from "./serialized-guard-policies.js";
 
@@ -30,6 +31,8 @@ export class ActivationAttemptGuard {
       result = await applyActivationAttempt(this.storage, body);
     } else if (action === "rate-limit") {
       result = await applyRateLimit(this.storage, body);
+    } else if (action === "checkout-redeem") {
+      result = await applyCheckoutRedemption(this.storage, body);
     } else if (AI_BUDGET_ACTIONS.has(action)) {
       result = await applyAiBudget(this.storage, body);
     } else {

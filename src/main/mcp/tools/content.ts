@@ -24,13 +24,7 @@ import {
 import type { TabManager } from "../../tabs/tab-manager";
 import { resolveSelector } from "../../utils/selector-resolver";
 import { waitForLoad } from "../../utils/webcontents-utils";
-import {
-  asErrorTextResponse,
-  asNoActiveTabResponse,
-  asTextResponse,
-  getPremiumToolGateResponse,
-  withAction,
-} from "../mcp-helpers";
+import { asNoActiveTabResponse, asTextResponse, withAction } from "../mcp-helpers";
 
 const logger = createLogger("MCPContentTools");
 
@@ -52,13 +46,9 @@ async function buildExtractResponse(
   wc?: Electron.WebContents,
 ): Promise<string> {
   const adBlockLine = `**Ad Blocking:** ${adBlockingEnabled ? "On" : "Off"}`;
-  const savedHighlights = highlightsManager.getHighlightsForUrl(
-    pageContent.url,
-  );
+  const savedHighlights = highlightsManager.getHighlightsForUrl(pageContent.url);
   const liveSelectionSection = wc
-    ? formatLiveSelectionSection(
-        await captureLiveHighlightSnapshot(wc, savedHighlights),
-      )
+    ? formatLiveSelectionSection(await captureLiveHighlightSnapshot(wc, savedHighlights))
     : null;
   const livePrefix = liveSelectionSection ? `\n\n${liveSelectionSection}` : "";
 
@@ -66,8 +56,7 @@ async function buildExtractResponse(
     const structured = buildStructuredContext(pageContent);
     const truncated =
       pageContent.content.length > MAX_MCP_NAV_CONTENT_LENGTH
-        ? pageContent.content.slice(0, MAX_MCP_NAV_CONTENT_LENGTH) +
-          "\n[Content truncated...]"
+        ? pageContent.content.slice(0, MAX_MCP_NAV_CONTENT_LENGTH) + "\n[Content truncated...]"
         : pageContent.content;
     return `${adBlockLine}${livePrefix}\n\n${structured}\n\n## PAGE CONTENT\n\n${truncated}`;
   }
@@ -93,15 +82,11 @@ export function registerContentTools(
         stream_id: z
           .string()
           .optional()
-          .describe(
-            "Stable stream ID for incremental updates to the same entry",
-          ),
+          .describe("Stable stream ID for incremental updates to the same entry"),
         mode: z
           .enum(["append", "replace", "final"])
           .optional()
-          .describe(
-            "append (default), replace current stream text, or mark the stream final",
-          ),
+          .describe("append (default), replace current stream text, or mark the stream final"),
         kind: z
           .enum(["thinking", "message", "status"])
           .optional()
@@ -167,23 +152,20 @@ export function registerContentTools(
     async ({ mode }) => {
       const tab = tabManager.getActiveTab();
       if (!tab) return asNoActiveTabResponse();
-
-      try {
-        const pageContent = await extractContent(tab.view.webContents);
-        const effectiveMode = (mode || "full") as ExtractMode;
-        return asTextResponse(
-          await buildExtractResponse(
+      return withAction(runtime, tabManager, "extract_content", { mode }, async () => {
+        try {
+          const pageContent = await extractContent(tab.view.webContents);
+          const effectiveMode = (mode || "full") as ExtractMode;
+          return await buildExtractResponse(
             pageContent,
             effectiveMode,
             tab.state.adBlockingEnabled,
             tab.view.webContents,
-          ),
-        );
-      } catch (error) {
-        return asTextResponse(
-          `Error extracting content: ${error instanceof Error ? error.message : "Unknown error"}`,
-        );
-      }
+          );
+        } catch (error) {
+          return `Error extracting content: ${error instanceof Error ? error.message : "Unknown error"}`;
+        }
+      });
     },
   );
 
@@ -205,12 +187,8 @@ export function registerContentTools(
     async ({ mode }) => {
       const tab = tabManager.getActiveTab();
       if (!tab) return asNoActiveTabResponse();
-      return withAction(
-        runtime,
-        tabManager,
-        "read_page",
-        { mode },
-        async () => handleReadPage({ tabManager, runtime }, { mode }),
+      return withAction(runtime, tabManager, "read_page", { mode }, async () =>
+        handleReadPage({ tabManager, runtime }, { mode }),
       );
     },
   );
@@ -219,8 +197,7 @@ export function registerContentTools(
     "list_tabs",
     {
       title: "List Tabs",
-      description:
-        "List all open browser tabs with their IDs, titles, and URLs.",
+      description: "List all open browser tabs with their IDs, titles, and URLs.",
     },
     async () => {
       const activeId = tabManager.getActiveTabId();
@@ -240,13 +217,8 @@ export function registerContentTools(
       description:
         "Enable or disable ad blocking for the active tab or a matched tab. Reload after changes unless reload is false.",
       inputSchema: z.object({
-        enabled: z
-          .boolean()
-          .describe("Whether ad blocking should be enabled for the target tab"),
-        tabId: z
-          .string()
-          .optional()
-          .describe("Exact tab ID to target instead of the active tab"),
+        enabled: z.boolean().describe("Whether ad blocking should be enabled for the target tab"),
+        tabId: z.string().optional().describe("Exact tab ID to target instead of the active tab"),
         match: z
           .string()
           .optional()
@@ -314,46 +286,38 @@ export function registerContentTools(
     async ({ type }) => {
       const tab = tabManager.getActiveTab();
       if (!tab) return asNoActiveTabResponse();
+      return withAction(runtime, tabManager, "extract_structured_data", { type }, async () => {
+        try {
+          const pageContent = await extractContent(tab.view.webContents);
+          const requestedType =
+            typeof type === "string" && type.trim() ? type.trim().toLowerCase() : "";
+          const entities = (pageContent.structuredData ?? []).filter((entity) =>
+            requestedType
+              ? entity.types.some((entry) => entry.toLowerCase() === requestedType)
+              : true,
+          );
+          const sourceCounts = {
+            json_ld: pageContent.jsonLd?.length ?? 0,
+            microdata: pageContent.microdata?.length ?? 0,
+            rdfa: pageContent.rdfa?.length ?? 0,
+            meta_tags: Object.keys(pageContent.metaTags ?? {}).length,
+          };
+          const usedPageFallback =
+            entities.length > 0 && entities.every((entity) => entity.source === "page");
+          const hasRawSources =
+            sourceCounts.json_ld > 0 || sourceCounts.microdata > 0 || sourceCounts.rdfa > 0;
+          const message =
+            entities.length > 0
+              ? usedPageFallback
+                ? hasRawSources
+                  ? `Raw structured data sources were found (${sourceCounts.json_ld} JSON-LD, ${sourceCounts.microdata} microdata, ${sourceCounts.rdfa} RDFa) but could not be normalized into typed entities. Returning generic page metadata. The raw sources may contain parseable data — check sources_checked counts.`
+                  : "No richer machine-readable schema was detected. Returning a generic page metadata entity synthesized from the current page."
+                : undefined
+              : requestedType
+                ? `No structured data entities matched type "${type}".`
+                : "No structured data entities detected. This page may not expose usable JSON-LD, microdata, RDFa, or high-signal metadata.";
 
-      try {
-        const pageContent = await extractContent(tab.view.webContents);
-        const requestedType =
-          typeof type === "string" && type.trim()
-            ? type.trim().toLowerCase()
-            : "";
-        const entities = (pageContent.structuredData ?? []).filter((entity) =>
-          requestedType
-            ? entity.types.some(
-                (entry) => entry.toLowerCase() === requestedType,
-              )
-            : true,
-        );
-        const sourceCounts = {
-          json_ld: pageContent.jsonLd?.length ?? 0,
-          microdata: pageContent.microdata?.length ?? 0,
-          rdfa: pageContent.rdfa?.length ?? 0,
-          meta_tags: Object.keys(pageContent.metaTags ?? {}).length,
-        };
-        const usedPageFallback =
-          entities.length > 0 &&
-          entities.every((entity) => entity.source === "page");
-        const hasRawSources =
-          sourceCounts.json_ld > 0 ||
-          sourceCounts.microdata > 0 ||
-          sourceCounts.rdfa > 0;
-        const message =
-          entities.length > 0
-            ? usedPageFallback
-              ? hasRawSources
-                ? `Raw structured data sources were found (${sourceCounts.json_ld} JSON-LD, ${sourceCounts.microdata} microdata, ${sourceCounts.rdfa} RDFa) but could not be normalized into typed entities. Returning generic page metadata. The raw sources may contain parseable data — check sources_checked counts.`
-                : "No richer machine-readable schema was detected. Returning a generic page metadata entity synthesized from the current page."
-              : undefined
-            : requestedType
-              ? `No structured data entities matched type "${type}".`
-              : "No structured data entities detected. This page may not expose usable JSON-LD, microdata, RDFa, or high-signal metadata.";
-
-        return asTextResponse(
-          JSON.stringify(
+          return JSON.stringify(
             {
               url: pageContent.url,
               title: pageContent.title,
@@ -365,13 +329,11 @@ export function registerContentTools(
             },
             null,
             2,
-          ),
-        );
-      } catch (error) {
-        return asTextResponse(
-          `Error extracting structured data: ${error instanceof Error ? error.message : "Unknown error"}`,
-        );
-      }
+          );
+        } catch (error) {
+          return `Error extracting structured data: ${error instanceof Error ? error.message : "Unknown error"}`;
+        }
+      });
     },
   );
 
@@ -382,22 +344,18 @@ export function registerContentTools(
       description:
         "Extract the text content of a specific element by its index number or CSS selector.",
       inputSchema: z.object({
-        index: z
-          .number()
-          .optional()
-          .describe("Element index from the page content listing"),
+        index: z.number().optional().describe("Element index from the page content listing"),
         selector: z.string().optional().describe("CSS selector as fallback"),
       }),
     },
     async ({ index, selector }) => {
       const tab = tabManager.getActiveTab();
       if (!tab) return asNoActiveTabResponse();
-      const wc = tab.view.webContents;
-      const resolvedSelector = await resolveSelector(wc, index, selector);
-      if (!resolvedSelector) {
-        return asErrorTextResponse("No index or selector provided");
-      }
-      const result = await wc.executeJavaScript(`
+      return withAction(runtime, tabManager, "extract_text", { index, selector }, async () => {
+        const wc = tab.view.webContents;
+        const resolvedSelector = await resolveSelector(wc, index, selector);
+        if (!resolvedSelector) return "Error: No index or selector provided";
+        const result = await wc.executeJavaScript(`
         (function() {
           try {
             const el = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -409,12 +367,23 @@ export function registerContentTools(
               el instanceof HTMLElement
                 ? (el.innerText || el.textContent || '')
                 : (el.textContent || '');
-            const value =
+            const rawValue =
               el instanceof HTMLInputElement ||
               el instanceof HTMLTextAreaElement ||
               el instanceof HTMLSelectElement
                 ? el.value
                 : null;
+            const inputType =
+              el instanceof HTMLInputElement ? String(el.type || '').toLowerCase() : '';
+            const autocomplete = String(el.getAttribute('autocomplete') || '').toLowerCase();
+            const sensitiveSignals = [
+              el.getAttribute('name'), el.getAttribute('id'),
+              el.getAttribute('aria-label'), el.getAttribute('placeholder')
+            ].filter(Boolean).join(' ').toLowerCase();
+            const sensitive =
+              inputType === 'password' ||
+              /(?:^|\\s)(?:current-password|new-password|one-time-code)(?:\\s|$)/.test(autocomplete) ||
+              /(?:password|passcode|\\botp\\b|\\btotp\\b|one[- ]?time|verification[- ]?code|security[- ]?code)/.test(sensitiveSignals);
             const attr =
               el.getAttribute('aria-label') ||
               el.getAttribute('title') ||
@@ -426,7 +395,8 @@ export function registerContentTools(
               tag,
               role,
               text: String(text || '').trim(),
-              value: value == null ? null : String(value),
+              value: sensitive ? null : (rawValue == null ? null : String(rawValue)),
+              sensitiveValuePresent: sensitive && Boolean(rawValue),
               attr: attr == null ? null : String(attr),
             };
           } catch (error) {
@@ -439,29 +409,24 @@ export function registerContentTools(
           }
         })()
       `);
-      if (!result || typeof result !== "object") {
-        return asTextResponse(
-          "Error: Element text extraction returned no result",
-        );
-      }
-      if ("error" in result && typeof result.error === "string") {
-        return asErrorTextResponse(result.error);
-      }
-      const parts: string[] = [`<${result.tag}>`];
-      if (
-        "role" in result &&
-        typeof result.role === "string" &&
-        result.role.trim()
-      ) {
-        parts.push(`role: ${result.role}`);
-      }
-      if (result.value !== null) parts.push(`value: ${result.value}`);
-      if (result.text) parts.push(`text: ${result.text}`);
-      if (result.attr) parts.push(`label: ${result.attr}`);
-      if (parts.length === 1) {
-        parts.push("No readable text, value, or label found on this element.");
-      }
-      return asTextResponse(parts.join("\n"));
+        if (!result || typeof result !== "object")
+          return "Error: Element text extraction returned no result";
+        if ("error" in result && typeof result.error === "string") {
+          return `Error: ${result.error}`;
+        }
+        const parts: string[] = [`<${result.tag}>`];
+        if ("role" in result && typeof result.role === "string" && result.role.trim()) {
+          parts.push(`role: ${result.role}`);
+        }
+        if (result.value !== null) parts.push(`value: ${result.value}`);
+        if (result.sensitiveValuePresent) parts.push("value: [redacted sensitive field]");
+        if (result.text) parts.push(`text: ${result.text}`);
+        if (result.attr) parts.push(`label: ${result.attr}`);
+        if (parts.length === 1) {
+          parts.push("No readable text, value, or label found on this element.");
+        }
+        return parts.join("\n");
+      });
     },
   );
 
@@ -469,55 +434,37 @@ export function registerContentTools(
     "screenshot",
     {
       title: "Screenshot",
-      description:
-        "Capture a screenshot of the current page. Returns a base64-encoded PNG image.",
+      description: "Capture a screenshot of the current page. Returns a base64-encoded PNG image.",
     },
     async () => {
-      const premiumGate = getPremiumToolGateResponse("screenshot");
-      if (premiumGate) return premiumGate;
-
       const tab = tabManager.getActiveTab();
       if (!tab) return asNoActiveTabResponse();
-
-      try {
-        const bounds = tab.view.getBounds();
-        if (bounds.width <= 0 || bounds.height <= 0) {
-          return asTextResponse(
-            "Error capturing screenshot: active tab has zero-sized bounds",
-          );
+      let image: { base64: string; width: number; height: number; path: string } | null = null;
+      const controlled = await withAction(runtime, tabManager, "screenshot", {}, async () => {
+        try {
+          const bounds = tab.view.getBounds();
+          if (bounds.width <= 0 || bounds.height <= 0) {
+            return "Error capturing screenshot: active tab has zero-sized bounds";
+          }
+          const screenshot = await captureScreenshot(tab.view.webContents);
+          if (!screenshot.ok) {
+            return `Error capturing screenshot: ${screenshot.error}`;
+          }
+          const screenshotPath = path.join(os.tmpdir(), `vessel_screenshot_${Date.now()}.png`);
+          fs.writeFileSync(screenshotPath, Buffer.from(screenshot.base64, "base64"));
+          image = { ...screenshot, path: screenshotPath };
+          return `Screenshot captured: ${screenshot.width}x${screenshot.height}\nSaved to: ${screenshotPath}\nTo analyze visually, call vision_analyze with image_url="${screenshotPath}"`;
+        } catch (error) {
+          return `Error capturing screenshot: ${error instanceof Error ? error.message : "Unknown error"}`;
         }
-        const screenshot = await captureScreenshot(tab.view.webContents);
-        if (!screenshot.ok) {
-          return asTextResponse(
-            `Error capturing screenshot: ${screenshot.error}`,
-          );
-        }
-        const screenshotPath = path.join(
-          os.tmpdir(),
-          `vessel_screenshot_${Date.now()}.png`,
-        );
-        fs.writeFileSync(
-          screenshotPath,
-          Buffer.from(screenshot.base64, "base64"),
-        );
-        return {
-          content: [
-            {
-              type: "image" as const,
-              data: screenshot.base64,
-              mimeType: "image/png",
-            },
-            {
-              type: "text" as const,
-              text: `Screenshot captured: ${screenshot.width}x${screenshot.height}\nSaved to: ${screenshotPath}\nTo analyze visually, call vision_analyze with image_url="${screenshotPath}"`,
-            },
-          ],
-        };
-      } catch (error) {
-        return asTextResponse(
-          `Error capturing screenshot: ${error instanceof Error ? error.message : "Unknown error"}`,
-        );
-      }
+      });
+      if (!image) return controlled;
+      return {
+        content: [
+          { type: "image" as const, data: image.base64, mimeType: "image/png" },
+          controlled.content[0],
+        ],
+      };
     },
   );
 
@@ -531,114 +478,94 @@ export function registerContentTools(
     async () => {
       const tab = tabManager.getActiveTab();
       if (!tab) {
-        return asTextResponse(
-          "No active tab. Use navigate to open a page.",
-        );
+        return asTextResponse("No active tab. Use navigate to open a page.");
       }
 
-      const wc = tab.view.webContents;
-      let page: PageContent;
-      try {
-        page = await extractContent(wc);
-      } catch (err) {
-        logger.warn("Failed to extract page while generating suggestions:", err);
-        return asTextResponse(
-          "Could not read page. Try navigate to a working URL.",
-        );
-      }
-
-      const suggestions: string[] = [];
-      suggestions.push(`Page: ${page.title || "(untitled)"}`);
-      suggestions.push(`URL: ${page.url}`);
-      suggestions.push("");
-
-      const flowCtx = runtime.getFlowContext();
-      if (flowCtx) {
-        suggestions.push(flowCtx);
-        suggestions.push("");
-      }
-
-      const hasPasswordField = page.forms.some((f) =>
-        f.fields.some((el) => el.inputType === "password"),
-      );
-      const hasSearchInput = page.interactiveElements.some(
-        (el) =>
-          el.inputType === "search" ||
-          el.name === "q" ||
-          el.name === "query" ||
-          (el.placeholder || "").toLowerCase().includes("search"),
-      );
-      const formCount = page.forms.length;
-      const totalFields = page.forms.reduce((n, f) => n + f.fields.length, 0);
-      const linkCount = page.interactiveElements.filter(
-        (el) => el.type === "link",
-      ).length;
-      const hasPagination = page.interactiveElements.some(
-        (el) =>
-          (el.text || "").toLowerCase() === "next" ||
-          el.text === "›" ||
-          el.text === "»",
-      );
-      const hasOverlays = page.overlays.some((o) => o.blocksInteraction);
-
-      if (hasOverlays) {
-        suggestions.push("⚠ BLOCKING OVERLAY detected — dismiss it first:");
-        suggestions.push("  → clear_overlays for stacked modals");
-        suggestions.push("  → or dismiss_popup for a single popup");
-        suggestions.push("");
-      }
-
-      if (hasPasswordField) {
-        suggestions.push("🔑 LOGIN PAGE detected:");
-        suggestions.push(
-          "  → login(username, password) — handles the full flow",
-        );
-        suggestions.push(
-          "  → Or fill_form + submit_form for manual control",
-        );
-      } else if (hasSearchInput && linkCount < 10) {
-        suggestions.push("🔍 SEARCH PAGE detected:");
-        suggestions.push(
-          "  → search(query) — finds the box, types, submits",
-        );
-      } else if (hasSearchInput && linkCount >= 10) {
-        suggestions.push("📋 SEARCH RESULTS detected:");
-        suggestions.push("  → click on a result link");
-        if (hasPagination) {
-          suggestions.push("  → paginate('next') for more results");
+      return withAction(runtime, tabManager, "suggest", {}, async () => {
+        const wc = tab.view.webContents;
+        let page: PageContent;
+        try {
+          page = await extractContent(wc);
+        } catch (err) {
+          logger.warn("Failed to extract page while generating suggestions:", err);
+          return "Could not read page. Try navigate to a working URL.";
         }
-      } else if (formCount > 0) {
-        suggestions.push(`📝 FORM detected (${totalFields} fields):`);
-        suggestions.push(
-          "  → fill_form(fields) — fill all fields at once",
-        );
-        suggestions.push("  → Or type for individual fields");
-      } else if (hasPagination) {
-        suggestions.push("📄 PAGINATED CONTENT:");
-        suggestions.push("  → extract_content to read this page");
-        suggestions.push("  → paginate('next') for the next page");
-      } else if (
-        page.content.length > 3000 &&
-        page.interactiveElements.length < 10
-      ) {
-        suggestions.push("📖 ARTICLE/CONTENT page:");
-        suggestions.push("  → extract_content for readable text");
-        suggestions.push("  → scroll to see more");
-      } else {
-        suggestions.push("🌐 GENERAL PAGE:");
-        suggestions.push(
-          "  → extract_content to understand the page structure",
-        );
-        suggestions.push("  → click on any element by index");
-        suggestions.push("  → navigate to go somewhere new");
-      }
 
-      suggestions.push("");
-      suggestions.push(
-        `Available: ${page.interactiveElements.length} interactive elements, ${formCount} forms, ${linkCount} links`,
-      );
+        const suggestions: string[] = [];
+        suggestions.push(`Page: ${page.title || "(untitled)"}`);
+        suggestions.push(`URL: ${page.url}`);
+        suggestions.push("");
 
-      return asTextResponse(suggestions.join("\n"));
+        const flowCtx = runtime.getFlowContext();
+        if (flowCtx) {
+          suggestions.push(flowCtx);
+          suggestions.push("");
+        }
+
+        const hasPasswordField = page.forms.some((f) =>
+          f.fields.some((el) => el.inputType === "password"),
+        );
+        const hasSearchInput = page.interactiveElements.some(
+          (el) =>
+            el.inputType === "search" ||
+            el.name === "q" ||
+            el.name === "query" ||
+            (el.placeholder || "").toLowerCase().includes("search"),
+        );
+        const formCount = page.forms.length;
+        const totalFields = page.forms.reduce((n, f) => n + f.fields.length, 0);
+        const linkCount = page.interactiveElements.filter((el) => el.type === "link").length;
+        const hasPagination = page.interactiveElements.some(
+          (el) => (el.text || "").toLowerCase() === "next" || el.text === "›" || el.text === "»",
+        );
+        const hasOverlays = page.overlays.some((o) => o.blocksInteraction);
+
+        if (hasOverlays) {
+          suggestions.push("⚠ BLOCKING OVERLAY detected — dismiss it first:");
+          suggestions.push("  → clear_overlays for stacked modals");
+          suggestions.push("  → or dismiss_popup for a single popup");
+          suggestions.push("");
+        }
+
+        if (hasPasswordField) {
+          suggestions.push("🔑 LOGIN PAGE detected:");
+          suggestions.push("  → login(username, password) — handles the full flow");
+          suggestions.push("  → Or fill_form + submit_form for manual control");
+        } else if (hasSearchInput && linkCount < 10) {
+          suggestions.push("🔍 SEARCH PAGE detected:");
+          suggestions.push("  → search(query) — finds the box, types, submits");
+        } else if (hasSearchInput && linkCount >= 10) {
+          suggestions.push("📋 SEARCH RESULTS detected:");
+          suggestions.push("  → click on a result link");
+          if (hasPagination) {
+            suggestions.push("  → paginate('next') for more results");
+          }
+        } else if (formCount > 0) {
+          suggestions.push(`📝 FORM detected (${totalFields} fields):`);
+          suggestions.push("  → fill_form(fields) — fill all fields at once");
+          suggestions.push("  → Or type for individual fields");
+        } else if (hasPagination) {
+          suggestions.push("📄 PAGINATED CONTENT:");
+          suggestions.push("  → extract_content to read this page");
+          suggestions.push("  → paginate('next') for the next page");
+        } else if (page.content.length > 3000 && page.interactiveElements.length < 10) {
+          suggestions.push("📖 ARTICLE/CONTENT page:");
+          suggestions.push("  → extract_content for readable text");
+          suggestions.push("  → scroll to see more");
+        } else {
+          suggestions.push("🌐 GENERAL PAGE:");
+          suggestions.push("  → extract_content to understand the page structure");
+          suggestions.push("  → click on any element by index");
+          suggestions.push("  → navigate to go somewhere new");
+        }
+
+        suggestions.push("");
+        suggestions.push(
+          `Available: ${page.interactiveElements.length} interactive elements, ${formCount} forms, ${linkCount} links`,
+        );
+
+        return suggestions.join("\n");
+      });
     },
   );
 
@@ -646,8 +573,7 @@ export function registerContentTools(
     "extract_table",
     {
       title: "Extract Table",
-      description:
-        "Extract a table from the page as structured JSON rows with headers.",
+      description: "Extract a table from the page as structured JSON rows with headers.",
       inputSchema: z.object({
         index: z.number().optional().describe("Element index of the table"),
         selector: z.string().optional().describe("CSS selector for the table"),
@@ -663,9 +589,7 @@ export function registerContentTools(
         { index, selector: rawSelector },
         async () => {
           const wc = tab.view.webContents;
-          const sel =
-            rawSelector ||
-            (index != null ? await resolveSelector(wc, index) : null);
+          const sel = rawSelector || (index != null ? await resolveSelector(wc, index) : null);
           const tableJson = await wc.executeJavaScript(`
             (function() {
               var table = ${sel ? `document.querySelector(${JSON.stringify(sel)})` : "document.querySelector('table')"};

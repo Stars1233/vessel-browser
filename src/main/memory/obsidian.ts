@@ -9,7 +9,7 @@ const DEFAULT_BOOKMARK_FOLDER = "Vessel/Bookmarks";
 const PAGE_CONTENT_LIMIT = 6000;
 const DEFAULT_LIST_LIMIT = 50;
 const DEFAULT_SEARCH_LIMIT = 20;
-const { access, mkdir, readFile, readdir, stat, writeFile } = fs.promises;
+const { access, lstat, mkdir, open, readFile, readdir, realpath, stat, writeFile } = fs.promises;
 
 export interface SavedMemoryNote {
   title: string;
@@ -85,6 +85,36 @@ function assertInsideVault(targetPath: string, vaultRoot: string): string {
   return resolved;
 }
 
+async function canonicalVaultRoot(create: true): Promise<string>;
+async function canonicalVaultRoot(create?: false): Promise<string | null>;
+async function canonicalVaultRoot(create = false): Promise<string | null> {
+  const root = getVaultRoot();
+  if (create) await mkdir(root, { recursive: true });
+  if (!(await pathExists(root))) return null;
+  return await realpath(root);
+}
+
+async function rejectSymlinkComponents(vaultRoot: string, targetPath: string): Promise<void> {
+  const relative = path.relative(vaultRoot, assertInsideVault(targetPath, vaultRoot));
+  let current = vaultRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      if ((await lstat(current)).isSymbolicLink()) {
+        throw new Error("Symbolic links are not allowed in configured vault paths.");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
+async function resolveExistingVaultPath(vaultRoot: string, targetPath: string): Promise<string> {
+  await rejectSymlinkComponents(vaultRoot, targetPath);
+  return assertInsideVault(await realpath(targetPath), vaultRoot);
+}
+
 function normalizeFolder(folder: string | undefined, fallback: string): string {
   const raw = (folder?.trim() || fallback).replace(/\\/g, "/");
   if (!raw) return fallback;
@@ -118,9 +148,7 @@ function escapeYaml(value: string): string {
   return JSON.stringify(value);
 }
 
-function renderFrontmatter(
-  data: Record<string, string | string[] | undefined>,
-): string {
+function renderFrontmatter(data: Record<string, string | string[] | undefined>): string {
   const lines: string[] = ["---"];
   for (const [key, value] of Object.entries(data)) {
     if (value == null) continue;
@@ -257,17 +285,11 @@ async function toSummary(
   raw?: string,
 ): Promise<MemoryNoteSummary> {
   const stats = await stat(absolutePath);
-  const relativePath = path
-    .relative(vaultRoot, absolutePath)
-    .split(path.sep)
-    .join("/");
+  const relativePath = path.relative(vaultRoot, absolutePath).split(path.sep).join("/");
   const noteContent = raw ?? (await readFile(absolutePath, "utf-8"));
   const parsed = parseFrontmatter(noteContent);
   const headingMatch = parsed.body.match(/^#\s+(.+)$/m);
-  const title =
-    parsed.title ||
-    headingMatch?.[1]?.trim() ||
-    path.basename(absolutePath, ".md");
+  const title = parsed.title || headingMatch?.[1]?.trim() || path.basename(absolutePath, ".md");
 
   return {
     title,
@@ -302,10 +324,12 @@ export async function writeMemoryNote({
   tags = [],
   frontmatter = {},
 }: WriteMemoryNoteInput): Promise<SavedMemoryNote> {
-  const vaultRoot = getVaultRoot();
+  const vaultRoot = await canonicalVaultRoot(true);
   const relativeFolder = normalizeFolder(folder, DEFAULT_NOTE_FOLDER);
   const targetDir = path.join(vaultRoot, relativeFolder);
+  await rejectSymlinkComponents(vaultRoot, targetDir);
   await mkdir(targetDir, { recursive: true });
+  await resolveExistingVaultPath(vaultRoot, targetDir);
 
   const absolutePath = await buildUniqueNotePath(targetDir, title);
   const relativePath = path.relative(vaultRoot, absolutePath);
@@ -320,7 +344,7 @@ export async function writeMemoryNote({
     "",
   ].join("\n");
 
-  await writeFile(absolutePath, content, "utf-8");
+  await writeFile(absolutePath, content, { encoding: "utf-8", flag: "wx", mode: 0o600 });
 
   return {
     title,
@@ -334,25 +358,30 @@ export async function appendToMemoryNote({
   content,
   heading,
 }: AppendMemoryNoteInput): Promise<SavedMemoryNote> {
-  const vaultRoot = getVaultRoot();
+  const vaultRoot = await canonicalVaultRoot();
   const relativePath = normalizeNotePath(notePath);
-  const absolutePath = assertInsideVault(
-    path.join(vaultRoot, relativePath),
-    vaultRoot,
-  );
+  if (!vaultRoot) {
+    throw new Error(`Memory note not found: ${relativePath.split(path.sep).join("/")}`);
+  }
+  let absolutePath = assertInsideVault(path.join(vaultRoot, relativePath), vaultRoot);
   if (!(await pathExists(absolutePath))) {
-    throw new Error(
-      `Memory note not found: ${relativePath.split(path.sep).join("/")}`,
-    );
+    throw new Error(`Memory note not found: ${relativePath.split(path.sep).join("/")}`);
   }
+  absolutePath = await resolveExistingVaultPath(vaultRoot, absolutePath);
 
-  const current = (await readFile(absolutePath, "utf-8")).trimEnd();
-  const nextParts = [current, ""];
-  if (heading?.trim()) {
-    nextParts.push(`## ${heading.trim()}`, "");
+  const handle = await open(absolutePath, fs.constants.O_RDWR | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const current = (await handle.readFile("utf-8")).trimEnd();
+    const nextParts = [current, ""];
+    if (heading?.trim()) {
+      nextParts.push(`## ${heading.trim()}`, "");
+    }
+    nextParts.push(content.trim(), "");
+    await handle.truncate(0);
+    await handle.write(nextParts.join("\n"), 0, "utf-8");
+  } finally {
+    await handle.close();
   }
-  nextParts.push(content.trim(), "");
-  await writeFile(absolutePath, nextParts.join("\n"), "utf-8");
 
   return {
     title: path.basename(absolutePath, ".md"),
@@ -365,18 +394,18 @@ export async function listMemoryNotes({
   folder,
   limit = DEFAULT_LIST_LIMIT,
 }: ListMemoryNotesInput = {}): Promise<MemoryNoteSummary[]> {
-  const vaultRoot = getVaultRoot();
+  const vaultRoot = await canonicalVaultRoot();
+  if (!vaultRoot) return [];
   const relativeFolder = normalizeFolder(folder, "");
-  const targetDir = relativeFolder
-    ? path.join(vaultRoot, relativeFolder)
-    : vaultRoot;
+  const targetDir = relativeFolder ? path.join(vaultRoot, relativeFolder) : vaultRoot;
 
   if (!(await pathExists(targetDir))) {
     return [];
   }
+  const safeTargetDir = await resolveExistingVaultPath(vaultRoot, targetDir);
 
   const notes = await Promise.all(
-    (await collectMarkdownFiles(targetDir)).map((absolutePath) =>
+    (await collectMarkdownFiles(safeTargetDir)).map((absolutePath) =>
       toSummary(absolutePath, vaultRoot),
     ),
   );
@@ -396,33 +425,28 @@ export async function searchMemoryNotes({
     throw new Error("A non-empty memory search query is required.");
   }
 
-  const vaultRoot = getVaultRoot();
+  const vaultRoot = await canonicalVaultRoot();
+  if (!vaultRoot) return [];
   const relativeFolder = normalizeFolder(folder, "");
-  const targetDir = relativeFolder
-    ? path.join(vaultRoot, relativeFolder)
-    : vaultRoot;
+  const targetDir = relativeFolder ? path.join(vaultRoot, relativeFolder) : vaultRoot;
 
   if (!(await pathExists(targetDir))) {
     return [];
   }
+  const safeTargetDir = await resolveExistingVaultPath(vaultRoot, targetDir);
 
-  const loweredTags = tags
-    .map((tag) => tag.trim().toLowerCase())
-    .filter(Boolean);
+  const loweredTags = tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
 
   const matches = await Promise.all(
-    (await collectMarkdownFiles(targetDir)).map(async (absolutePath) => {
+    (await collectMarkdownFiles(safeTargetDir)).map(async (absolutePath) => {
       const raw = await readFile(absolutePath, "utf-8");
       const parsed = parseFrontmatter(raw);
       const summary = await toSummary(absolutePath, vaultRoot, raw);
-      const haystack =
-        `${summary.title}\n${summary.relativePath}\n${parsed.body}`.toLowerCase();
+      const haystack = `${summary.title}\n${summary.relativePath}\n${parsed.body}`.toLowerCase();
       const hasQuery = haystack.includes(loweredQuery);
       const hasTags =
         loweredTags.length === 0 ||
-        loweredTags.every((tag) =>
-          summary.tags.some((noteTag) => noteTag.toLowerCase() === tag),
-        );
+        loweredTags.every((tag) => summary.tags.some((noteTag) => noteTag.toLowerCase() === tag));
 
       return hasQuery && hasTags ? summary : null;
     }),

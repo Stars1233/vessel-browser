@@ -11,7 +11,7 @@
  *   PREMIUM_TOKEN_SECRET — random string used to sign premium auth tokens
  *   RESEND_API_KEY       — API key for transactional activation emails
  *   PREMIUM_FROM_EMAIL   — verified sender, e.g. Vessel <premium@example.com>
- *   ACTIVATION_KV        — KV binding for checkout redemption and AI usage compatibility storage
+ *   ACTIVATION_KV        — KV binding for activation sessions and AI usage compatibility storage
  *   ACTIVATION_GUARD     — Durable Object binding for serialized abuse guards and AI budgets
  *   OPENROUTER_API_KEY   — OpenRouter key used by hosted Vessel AI inference
  *   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON — Play Developer API service account JSON
@@ -37,6 +37,9 @@ const RESEND_API = "https://api.resend.com/emails";
 const ACTIVATION_CHALLENGE_TTL_MS = 15 * 60 * 1000;
 const PREMIUM_AUTH_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const CHECKOUT_REDEMPTION_TTL_SECONDS = Math.ceil(PREMIUM_AUTH_TTL_MS / 1000);
+const CHECKOUT_REDEMPTION_CLAIM_TTL_MS = 60 * 1000;
+const CHECKOUT_GUARD_WINDOW_MS = 60 * 60 * 1000;
+const CHECKOUT_GUARD_MAX = 10;
 const MAX_FEEDBACK_MESSAGE_LENGTH = 5000;
 const FEEDBACK_SPAM_GUARD_WINDOW_SECONDS = 60 * 60;
 const FEEDBACK_SPAM_GUARD_MAX = 5;
@@ -52,7 +55,9 @@ const MOBILE_BACKEND_PROXY_METHODS = new Map([
 ]);
 
 function mobileBackendOrigin(env) {
-  return String(env.MOBILE_BACKEND_ORIGIN || "").trim().replace(/\/+$/, "");
+  return String(env.MOBILE_BACKEND_ORIGIN || "")
+    .trim()
+    .replace(/\/+$/, "");
 }
 
 function hasMobileBackendOrigin(env) {
@@ -182,11 +187,7 @@ class StripeApiError extends Error {
 }
 
 function logPremiumEvent(level, event, fields = {}) {
-  const logger = level === "error"
-    ? console.error
-    : level === "warn"
-      ? console.warn
-      : console.info;
+  const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
   logger("[Vessel Premium]", JSON.stringify({ event, ...fields }));
 }
 
@@ -276,7 +277,9 @@ async function stripeRequest(env, method, path, body) {
 }
 
 function normalizePlan(plan) {
-  const normalized = String(plan || "").trim().toLowerCase();
+  const normalized = String(plan || "")
+    .trim()
+    .toLowerCase();
   return PLAN_CONFIG[normalized] ? normalized : "premium";
 }
 
@@ -377,11 +380,17 @@ async function findCustomersByEmail(env, email) {
 }
 
 function escapeStripeSearchString(value) {
-  return String(value || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'");
 }
 
 async function getSubscription(env, customerId) {
-  const data = await stripeRequest(env, "GET", `/subscriptions?customer=${customerId}&status=all&limit=10`);
+  const data = await stripeRequest(
+    env,
+    "GET",
+    `/subscriptions?customer=${customerId}&status=all&limit=10`,
+  );
   const subscriptions = Array.isArray(data.data) ? data.data : [];
   const selected = pickBestSubscription(subscriptions);
   logPremiumEvent("info", "stripe.subscription.resolved", {
@@ -423,9 +432,7 @@ function pickBestSubscription(subscriptions) {
     .sort((a, b) => subscriptionAccessEndsAt(b) - subscriptionAccessEndsAt(a));
   if (entitled[0]) return entitled[0];
 
-  return subscriptions
-    .slice()
-    .sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
+  return subscriptions.slice().sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
 }
 
 function subscriptionToStatus(sub) {
@@ -446,7 +453,9 @@ function subscriptionToStatus(sub) {
 }
 
 function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
+  return String(email || "")
+    .trim()
+    .toLowerCase();
 }
 
 function isValidEmail(email) {
@@ -485,10 +494,7 @@ function base64UrlToString(value) {
 }
 
 async function sha256Hex(value) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
@@ -517,19 +523,13 @@ async function importHmacKey(secret) {
 
 async function signHmac(secret, value) {
   const key = await importHmacKey(secret);
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(value),
-  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
   return bytesToBase64Url(new Uint8Array(signature));
 }
 
 async function createSignedToken(env, purpose, payload) {
   const secret = getRequiredSecret(env, "PREMIUM_TOKEN_SECRET");
-  const header = stringToBase64Url(
-    JSON.stringify({ alg: "HS256", typ: "JWT", purpose }),
-  );
+  const header = stringToBase64Url(JSON.stringify({ alg: "HS256", typ: "JWT", purpose }));
   const body = stringToBase64Url(JSON.stringify(payload));
   const signature = await signHmac(secret, `${header}.${body}`);
   return `${header}.${body}.${signature}`;
@@ -654,10 +654,9 @@ async function getGooglePlaySubscription(env, packageName, purchaseToken) {
 }
 
 function isEntitledPlaySubscription(subscription) {
-  return [
-    "SUBSCRIPTION_STATE_ACTIVE",
-    "SUBSCRIPTION_STATE_IN_GRACE_PERIOD",
-  ].includes(subscription?.subscriptionState);
+  return ["SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"].includes(
+    subscription?.subscriptionState,
+  );
 }
 
 function authTokenTtlMsForExpiry(expiresAt) {
@@ -863,43 +862,43 @@ async function markActivationChallengeRedeemed(env, challengeToken, expiresAt) {
   await runActivationGuardAction(env, challengeToken, "redeem", expiresAt);
 }
 
-async function getCheckoutRedemptionKey(sessionId) {
-  return `checkout-session-redeemed:${await sha256Hex(sessionId)}`;
+async function runCheckoutRedemptionAction(env, sessionId, operation, claimId) {
+  return runSerializedGuardAction(env, `checkout-redeem:${sessionId}`, {
+    action: "checkout-redeem",
+    operation,
+    claimId,
+    claimTtlMs: CHECKOUT_REDEMPTION_CLAIM_TTL_MS,
+    redemptionTtlMs: CHECKOUT_REDEMPTION_TTL_SECONDS * 1000,
+  });
 }
 
-async function assertCheckoutSessionRedeemable(request, env, sessionId) {
-  if (!env.ACTIVATION_KV) {
-    return {
-      response: missingKvResponse(request, env, "Checkout verification"),
-    };
-  }
-
+async function beginCheckoutRedemption(request, env, sessionId) {
+  const claimId = crypto.randomUUID();
   try {
-    const key = await getCheckoutRedemptionKey(sessionId);
-    const redeemed = await env.ACTIVATION_KV.get(key);
-    if (redeemed) {
+    const result = await runCheckoutRedemptionAction(env, sessionId, "begin", claimId);
+    if (result.status === "redeemed" || result.status === "claimed") {
       return {
         response: corsResponse(
           request,
           env,
-          { error: "Checkout session has already been redeemed. Verify by email or use the stored premium token." },
+          {
+            error:
+              "Checkout session has already been redeemed or is being verified. Verify by email or use the stored premium token.",
+          },
           409,
         ),
       };
     }
-    return { key };
+    if (result.status !== "claimed-by-caller") {
+      throw new Error(`Unexpected checkout claim status: ${result.status}`);
+    }
+    return { claimId };
   } catch (error) {
     console.warn("Checkout redemption guard failed closed:", error);
     return {
       response: missingKvResponse(request, env, "Checkout verification"),
     };
   }
-}
-
-async function markCheckoutSessionRedeemed(env, key) {
-  await env.ACTIVATION_KV.put(key, String(Date.now()), {
-    expirationTtl: CHECKOUT_REDEMPTION_TTL_SECONDS,
-  });
 }
 
 function createUsageLedger(env) {
@@ -998,12 +997,12 @@ async function buildPremiumStatusForCustomer(
     return freePremiumStatus(fallbackEmail);
   }
 
-  const subscription = preferredSubscription || await getSubscription(env, customer.id);
+  const subscription = preferredSubscription || (await getSubscription(env, customer.id));
   const status = subscriptionToStatus(subscription);
-  const plan = status === "active" || status === "trialing"
-    ? planFromSubscription(env, subscription)
-    : "free";
+  const plan =
+    status === "active" || status === "trialing" ? planFromSubscription(env, subscription) : "free";
   const usage = await getUsage(env, customer.id);
+  const accessEndsAt = subscriptionAccessEndsAt(subscription);
 
   return {
     status,
@@ -1014,6 +1013,7 @@ async function buildPremiumStatusForCustomer(
       normalizeEmail(customer.email || fallbackEmail),
       plan,
       "stripe",
+      authTokenTtlMsForExpiry(accessEndsAt ? new Date(accessEndsAt * 1000).toISOString() : ""),
     ),
     email: customer.email || fallbackEmail,
     expiresAt: subscription?.current_period_end
@@ -1026,7 +1026,12 @@ async function buildPremiumStatusForCustomer(
   };
 }
 
-async function buildPremiumStatus(env, customerId, fallbackEmail = "", preferredSubscription = null) {
+async function buildPremiumStatus(
+  env,
+  customerId,
+  fallbackEmail = "",
+  preferredSubscription = null,
+) {
   if (!customerId) {
     return freePremiumStatus(fallbackEmail);
   }
@@ -1059,7 +1064,7 @@ function comparePremiumStatuses(left, right) {
 async function buildBestPremiumStatusForEmail(env, customerResolution, email) {
   const statusResults = await Promise.allSettled(
     customerResolution.customers.map((customer) =>
-      buildPremiumStatusForCustomer(env, customer, email)
+      buildPremiumStatusForCustomer(env, customer, email),
     ),
   );
   const statuses = statusResults
@@ -1151,15 +1156,21 @@ function stripeUnavailableResponse(
   message = "Premium verification is temporarily unavailable. Your code was not consumed; try again shortly.",
 ) {
   logPremiumEvent("error", event, fields);
-  return corsResponse(
-    request,
-    env,
-    { error: message },
-    503,
-  );
+  return corsResponse(request, env, { error: message }, 503);
 }
 
 async function handleCheckout(request, env) {
+  const rateLimit = await checkSerializedRateLimit(
+    request,
+    env,
+    `checkout-rate:${requestClientId(request)}`,
+    CHECKOUT_GUARD_MAX,
+    CHECKOUT_GUARD_WINDOW_MS,
+    "Premium checkout",
+    "Too many checkout requests. Try again later.",
+  );
+  if (rateLimit) return rateLimit;
+
   const url = new URL(request.url);
   const email = url.searchParams.get("email") || undefined;
 
@@ -1251,7 +1262,9 @@ async function handleFeedback(request, env) {
 
   const email = normalizeEmail(body.email);
   const message = String(body.message || "").trim();
-  const source = String(body.source || "").trim().slice(0, 100);
+  const source = String(body.source || "")
+    .trim()
+    .slice(0, 100);
 
   if (!isValidEmail(email)) {
     return corsResponse(request, env, { error: "A valid reply email is required" }, 400);
@@ -1346,14 +1359,20 @@ async function handleActivationStart(request, env) {
     customerResolution = await findCustomersByEmail(env, email);
   } catch (error) {
     if (!isStripeApiError(error)) throw error;
-    return stripeUnavailableResponse(request, env, "activation.start.failed", {
-      activationId: nonce,
-      stage: "customer_lookup",
-      stripeStatus: error.status || 0,
-      stripeCode: error.stripeCode || "",
-      stripeRequestId: error.requestId || "",
-      stripeEndpoint: error.endpoint || "",
-    }, "Premium verification is temporarily unavailable. Request a new code shortly.");
+    return stripeUnavailableResponse(
+      request,
+      env,
+      "activation.start.failed",
+      {
+        activationId: nonce,
+        stage: "customer_lookup",
+        stripeStatus: error.status || 0,
+        stripeCode: error.stripeCode || "",
+        stripeRequestId: error.requestId || "",
+        stripeEndpoint: error.endpoint || "",
+      },
+      "Premium verification is temporarily unavailable. Request a new code shortly.",
+    );
   }
 
   const customer = customerResolution.customers[0] || null;
@@ -1477,17 +1496,13 @@ async function handleActivationVerify(request, env) {
       entitlementStatus: "free",
       challengeRedeemed: false,
     });
-    return corsResponse(
-      request,
-      env,
-      {
-        status: "free",
-        customerId: "",
-        verificationToken: "",
-        email,
-        expiresAt: "",
-      },
-    );
+    return corsResponse(request, env, {
+      status: "free",
+      customerId: "",
+      verificationToken: "",
+      email,
+      expiresAt: "",
+    });
   }
 
   let status;
@@ -1530,43 +1545,53 @@ async function handleVerify(request, env) {
 
   const identifier = body.identifier;
   if (!identifier) {
-    return corsResponse(
-      request,
-      env,
-      { error: "identifier is required" },
-      400,
-    );
+    return corsResponse(request, env, { error: "identifier is required" }, 400);
   }
 
   if (identifier.startsWith("cs_")) {
-    const redemption = await assertCheckoutSessionRedeemable(request, env, identifier);
+    const redemption = await beginCheckoutRedemption(request, env, identifier);
     if (redemption.response) return redemption.response;
+    let committed = false;
+    try {
+      const session = await stripeRequest(env, "GET", `/checkout/sessions/${identifier}`);
+      if (session.error || !session.customer) {
+        return corsResponse(request, env, {
+          status: "free",
+          customerId: "",
+          verificationToken: "",
+          email: "",
+          expiresAt: "",
+        });
+      }
 
-    const session = await stripeRequest(env, "GET", `/checkout/sessions/${identifier}`);
-    if (session.error || !session.customer) {
-      return corsResponse(request, env, {
-        status: "free",
-        customerId: "",
-        verificationToken: "",
-        email: "",
-        expiresAt: "",
-      });
+      const customerId =
+        typeof session.customer === "string" ? session.customer : session.customer.id;
+      const subscriptionId =
+        typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+      const subscription = await getSubscriptionById(env, subscriptionId);
+      const status = await buildPremiumStatus(env, customerId, "", subscription);
+      if (status.status === "active" || status.status === "trialing") {
+        const result = await runCheckoutRedemptionAction(
+          env,
+          identifier,
+          "commit",
+          redemption.claimId,
+        );
+        if (result.status !== "redeemed-by-caller") {
+          throw new Error(`Checkout claim could not be committed: ${result.status}`);
+        }
+        committed = true;
+      }
+      return corsResponse(request, env, status);
+    } finally {
+      if (!committed) {
+        try {
+          await runCheckoutRedemptionAction(env, identifier, "release", redemption.claimId);
+        } catch (error) {
+          console.warn("Checkout redemption claim release failed:", error);
+        }
+      }
     }
-
-    const customerId =
-      typeof session.customer === "string"
-        ? session.customer
-        : session.customer.id;
-    const subscriptionId =
-      typeof session.subscription === "string"
-        ? session.subscription
-        : session.subscription?.id;
-    const subscription = await getSubscriptionById(env, subscriptionId);
-    const status = await buildPremiumStatus(env, customerId, "", subscription);
-    if (status.status === "active" || status.status === "trialing") {
-      await markCheckoutSessionRedeemed(env, redemption.key);
-    }
-    return corsResponse(request, env, status);
   }
 
   const token = await verifySignedToken(env, identifier, "premium-access");
@@ -1733,8 +1758,7 @@ async function handleAiChatCompletions(request, env) {
       request,
       env,
       {
-        error:
-          "Vessel AI is not configured yet. Set OPENROUTER_API_KEY and ACTIVATION_GUARD.",
+        error: "Vessel AI is not configured yet. Set OPENROUTER_API_KEY and ACTIVATION_GUARD.",
       },
       503,
     );
@@ -1943,13 +1967,16 @@ export default {
         return mobileBackendNotConfiguredResponse(request, env);
       }
       if (path === "/entitlement" && request.method === "POST") {
-        if (await hasDesktopPremiumEntitlementToken(request, env) || !hasMobileBackendOrigin(env)) {
+        if (
+          (await hasDesktopPremiumEntitlementToken(request, env)) ||
+          !hasMobileBackendOrigin(env)
+        ) {
           return handleEntitlement(request, env);
         }
         return proxyToMobileBackend(request, env);
       }
       if (path === "/ai/chat/completions" && request.method === "POST") {
-        if (await hasDesktopPremiumBearerToken(request, env) || !hasMobileBackendOrigin(env)) {
+        if ((await hasDesktopPremiumBearerToken(request, env)) || !hasMobileBackendOrigin(env)) {
           return handleAiChatCompletions(request, env);
         }
         return proxyToMobileBackend(request, env);
