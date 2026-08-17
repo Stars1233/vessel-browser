@@ -36,9 +36,8 @@ export async function applyActivationAttempt(storage, body) {
   const action = body.action;
   const result = await storage.transaction(async (transaction) => {
     const stored = await transaction.get("challenge");
-    const challenge = stored && typeof stored === "object"
-      ? stored
-      : { attempts: 0, redeemed: false };
+    const challenge =
+      stored && typeof stored === "object" ? stored : { attempts: 0, redeemed: false };
 
     if (challenge.redeemed) {
       return { status: "redeemed", attempts: challenge.attempts || 0 };
@@ -76,9 +75,10 @@ export async function applyRateLimit(storage, body) {
   const now = Date.now();
   const result = await storage.transaction(async (transaction) => {
     const stored = await transaction.get("rate-limit");
-    const current = stored && typeof stored === "object" && Number(stored.expiresAt) > now
-      ? stored
-      : { count: 0, expiresAt: now + windowMs };
+    const current =
+      stored && typeof stored === "object" && Number(stored.expiresAt) > now
+        ? stored
+        : { count: 0, expiresAt: now + windowMs };
 
     if ((current.count || 0) >= max) {
       return {
@@ -106,6 +106,69 @@ export async function applyRateLimit(storage, body) {
   return result;
 }
 
+export async function applyCheckoutRedemption(storage, body) {
+  const operation = body?.operation;
+  const claimId = String(body?.claimId || "").trim();
+  const claimTtlMs = Math.floor(Number(body?.claimTtlMs));
+  const redemptionTtlMs = Math.floor(Number(body?.redemptionTtlMs));
+  if (
+    !["begin", "commit", "release"].includes(operation) ||
+    !claimId ||
+    !Number.isFinite(claimTtlMs) ||
+    claimTtlMs <= 0 ||
+    !Number.isFinite(redemptionTtlMs) ||
+    redemptionTtlMs <= 0
+  ) {
+    return { error: "Invalid checkout redemption action" };
+  }
+
+  const now = Date.now();
+  const result = await storage.transaction(async (transaction) => {
+    const stored = await transaction.get("checkout-redemption");
+    const current = stored && typeof stored === "object" ? stored : null;
+
+    if (operation === "begin") {
+      if (current?.status === "redeemed" && Number(current.expiresAt) > now) {
+        return { status: "redeemed", expiresAt: current.expiresAt };
+      }
+      if (current?.status === "claimed" && Number(current.expiresAt) > now) {
+        return { status: "claimed", expiresAt: current.expiresAt };
+      }
+      const next = {
+        status: "claimed",
+        claimId,
+        expiresAt: now + claimTtlMs,
+      };
+      await transaction.put("checkout-redemption", next);
+      return { status: "claimed-by-caller", expiresAt: next.expiresAt };
+    }
+
+    if (current?.status !== "claimed" || current.claimId !== claimId) {
+      return { status: current?.status === "redeemed" ? "redeemed" : "claim-lost" };
+    }
+
+    if (operation === "release") {
+      await transaction.put("checkout-redemption", {
+        status: "available",
+        expiresAt: now,
+      });
+      return { status: "released", expiresAt: now };
+    }
+
+    const next = {
+      status: "redeemed",
+      expiresAt: now + redemptionTtlMs,
+    };
+    await transaction.put("checkout-redemption", next);
+    return { status: "redeemed-by-caller", expiresAt: next.expiresAt };
+  });
+
+  if (Number(result?.expiresAt) > now) {
+    await storage.setAlarm(result.expiresAt);
+  }
+  return result;
+}
+
 export async function applyAiBudget(storage, body) {
   const period = String(body?.period || "").trim();
   if (!/^\d{4}-\d{2}$/.test(period)) {
@@ -121,18 +184,22 @@ export async function applyAiBudget(storage, body) {
   const now = Date.now();
   return storage.transaction(async (transaction) => {
     const stored = await transaction.get(storageKey);
-    const state = stored && typeof stored === "object"
-      ? stored
-      : {
-          period,
-          usage: normalizeUsage(body?.baseline, period),
-          reservations: {},
-        };
+    const state =
+      stored && typeof stored === "object"
+        ? stored
+        : {
+            period,
+            usage: normalizeUsage(body?.baseline, period),
+            reservations: {},
+          };
     state.usage = normalizeUsage(state.usage, period);
-    state.reservations = state.reservations && typeof state.reservations === "object"
-      ? state.reservations
-      : {};
-    pruneExpiredReservations(state.reservations, now, body.action === "ai-reconcile" ? reservationId : "");
+    state.reservations =
+      state.reservations && typeof state.reservations === "object" ? state.reservations : {};
+    pruneExpiredReservations(
+      state.reservations,
+      now,
+      body.action === "ai-reconcile" ? reservationId : "",
+    );
 
     if (body.action === "ai-get") {
       await transaction.put(storageKey, state);
@@ -143,8 +210,10 @@ export async function applyAiBudget(storage, body) {
       const budgetUsd = Number(body?.budgetUsd);
       const reservationUsd = Number(body?.reservationUsd);
       if (
-        !Number.isFinite(budgetUsd) || budgetUsd <= 0 ||
-        !Number.isFinite(reservationUsd) || reservationUsd <= 0
+        !Number.isFinite(budgetUsd) ||
+        budgetUsd <= 0 ||
+        !Number.isFinite(reservationUsd) ||
+        reservationUsd <= 0
       ) {
         return { error: "Invalid AI budget reservation" };
       }
@@ -176,9 +245,10 @@ export async function applyAiBudget(storage, body) {
       const promptTokens = Math.max(0, Number(body?.promptTokens) || 0);
       const completionTokens = Math.max(0, Number(body?.completionTokens) || 0);
       const reportedCostUsd = Number(body?.actualCostUsd);
-      const actualCostUsd = Number.isFinite(reportedCostUsd) && reportedCostUsd > 0
-        ? reportedCostUsd
-        : Math.max(0, Number(reservation.costUsd) || 0);
+      const actualCostUsd =
+        Number.isFinite(reportedCostUsd) && reportedCostUsd > 0
+          ? reportedCostUsd
+          : Math.max(0, Number(reservation.costUsd) || 0);
       state.usage = {
         ...state.usage,
         requests: state.usage.requests + 1,

@@ -31,38 +31,11 @@ import {
   isFailurePageUrl,
   type TabNavigationMode,
 } from "./navigation-state";
+import { CertificateErrorController } from "./certificate-error-controller";
 
 const MAX_CUSTOM_HISTORY = 50;
 const READER_MODE_DATA_URL_PREFIX = INTERNAL_HTML_DATA_URL_PREFIX;
 const logger = createLogger("Tab");
-
-// Per-session certificate exception sets, so "proceed anyway" only applies
-// within the same session partition (e.g. private vs regular).
-const sessionCertExceptions = new WeakMap<Electron.Session, Set<string>>();
-const sessionsWithVerifyProc = new WeakSet<Electron.Session>();
-
-// Electron certificate verification callback result codes.
-const CERT_VERIFY_TRUST = 0; // Trust the certificate
-const CERT_VERIFY_DEFAULT = -3; // Use Chromium's default verification
-
-function setupCertificateVerifyProc(s: Electron.Session): Set<string> {
-  let exceptions = sessionCertExceptions.get(s);
-  if (!exceptions) {
-    exceptions = new Set();
-    sessionCertExceptions.set(s, exceptions);
-  }
-  if (!sessionsWithVerifyProc.has(s)) {
-    s.setCertificateVerifyProc((request, callback) => {
-      if (exceptions!.has(request.hostname)) {
-        callback(CERT_VERIFY_TRUST);
-      } else {
-        callback(CERT_VERIFY_DEFAULT);
-      }
-    });
-    sessionsWithVerifyProc.add(s);
-  }
-  return exceptions;
-}
 
 interface OpenUrlRequest {
   url: string;
@@ -85,7 +58,7 @@ export class Tab {
   private _highlightModeActive = false;
   private _readerOriginalUrl: string | null = null;
   private _securityState: SecurityState = { status: "none", url: "" };
-  private _certExceptions: Set<string>;
+  private certificateErrors = new CertificateErrorController();
 
   // Fully custom URL history — we never rely on Chromium's native back/forward
   // because loadURL() calls (used for anchor clicks, form GETs, etc.) pollute
@@ -174,7 +147,6 @@ export class Tab {
       webPreferences.session = session.fromPartition(options.sessionPartition);
     }
     this.view = new WebContentsView({ webPreferences });
-    this._certExceptions = setupCertificateVerifyProc(this.view.webContents.session);
 
     const initialUrl = url || "about:blank";
 
@@ -281,6 +253,11 @@ export class Tab {
     };
 
     wc.on("will-navigate", (event, url) => {
+      if (this._securityState.status === "error" && url !== this._securityState.url) {
+        this.certificateErrors.reject();
+        this._securityState = { status: "none", url: "" };
+        this.onChange();
+      }
       blockNavigation(event, url, "Blocked top-level navigation");
     });
 
@@ -392,11 +369,23 @@ export class Tab {
       updateSecurityState();
     });
 
-    wc.on("certificate-error", (event, url, error) => {
+    wc.on("certificate-error", (event, url, error, certificate, callback, isMainFrame) => {
+      if (
+        !this.certificateErrors.begin({
+          url,
+          error,
+          fingerprint: certificate.fingerprint,
+          isMainFrame,
+          respond: callback,
+        })
+      )
+        return;
       event.preventDefault();
       this._securityState = { status: "error", url, errorMessage: error, canProceed: true };
       this.onChange();
     });
+
+    wc.once("destroyed", () => this.certificateErrors.reject());
 
     wc.on("did-finish-load", () => {
       syncNavigationState();
@@ -571,19 +560,21 @@ export class Tab {
   proceedAnyway(): void {
     const url = this._securityState.url;
     try {
-      const hostname = new URL(url).hostname;
-      this._certExceptions.add(hostname);
+      assertPermittedNavigationURL(url);
     } catch {
-      // Invalid URL — can't add an exception, navigating to safety instead
+      this.goBackToSafety();
+      return;
+    }
+    if (!this.certificateErrors.approve(url)) {
       this.goBackToSafety();
       return;
     }
     this._securityState = { status: "none", url: "" };
     this.onChange();
-    void this.view.webContents.loadURL(url);
   }
 
   goBackToSafety(): void {
+    this.certificateErrors.reject();
     this._securityState = { status: "none", url: "" };
     this.onChange();
     void this.view.webContents.loadURL("about:blank");

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 REPO_URL="${VESSEL_REPO_URL:-https://github.com/unmodeled-tyler/vessel-browser.git}"
 BRANCH="${VESSEL_BRANCH:-main}"
@@ -60,6 +61,7 @@ require_cmd npm
 require_node_version
 
 mkdir -p "$BIN_DIR" "$DESKTOP_DIR" "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
 
 if [[ -d "$INSTALL_DIR" && ! -d "$INSTALL_DIR/.git" ]]; then
   fail "Install path exists and is not a git checkout: $INSTALL_DIR"
@@ -359,6 +361,10 @@ info "Writing MCP snippet to $MCP_SNIPPET_PATH"
 
 info "Writing Hermes MCP snippet to $HERMES_SNIPPET_PATH"
 "$MCP_HELPER_PATH" --format hermes >"$HERMES_SNIPPET_PATH"
+chmod 600 "$MCP_STDIO_SNIPPET_PATH" "$MCP_SNIPPET_PATH" "$HERMES_SNIPPET_PATH"
+if [[ -f "$MCP_AUTH_PATH" ]]; then
+  chmod 600 "$MCP_AUTH_PATH"
+fi
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   warn "$BIN_DIR is not on your PATH."

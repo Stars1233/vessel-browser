@@ -30,11 +30,11 @@ test("premium worker proxies mobile-only routes to the configured Node backend",
       return { ok: true };
     },
     async () => {
-      const response = await worker.fetch(
-        new Request(`${WORKER_URL}/health?probe=1`),
-        { ...env, MOBILE_BACKEND_ORIGIN: "https://mobile-origin.example" },
-      );
-      const data = await response.json() as { ok?: boolean };
+      const response = await worker.fetch(new Request(`${WORKER_URL}/health?probe=1`), {
+        ...env,
+        MOBILE_BACKEND_ORIGIN: "https://mobile-origin.example",
+      });
+      const data = (await response.json()) as { ok?: boolean };
 
       assert.equal(response.status, 200);
       assert.equal(data.ok, true);
@@ -58,7 +58,7 @@ test("premium worker rejects unsupported methods before proxying", async () => {
         new Request(`${WORKER_URL}/admin/usage`, { method: "DELETE" }),
         { ...env, MOBILE_BACKEND_ORIGIN: "https://mobile-origin.example" },
       );
-      const data = await response.json() as { error?: string };
+      const data = (await response.json()) as { error?: string };
 
       assert.equal(response.status, 405);
       assert.equal(response.headers.get("Allow"), "GET");
@@ -80,9 +80,9 @@ test("premium checkout uses Stripe-configured dynamic payment methods", async ()
     async () => {
       const response = await worker.fetch(
         new Request(`${WORKER_URL}/checkout?email=person%40example.com`, { method: "POST" }),
-        env,
+        { ...env, ACTIVATION_GUARD: createMemorySecurityGuard() },
       );
-      const data = await response.json() as { url?: string };
+      const data = (await response.json()) as { url?: string };
 
       assert.equal(response.status, 200);
       assert.equal(data.url, "https://checkout.stripe.test/session");
@@ -116,7 +116,7 @@ test("premium worker proxies mobile entitlement tokens while keeping desktop tok
         }),
         { ...env, MOBILE_BACKEND_ORIGIN: "https://mobile-origin.example" },
       );
-      const data = await response.json() as { status?: string; verificationToken?: string };
+      const data = (await response.json()) as { status?: string; verificationToken?: string };
 
       assert.equal(response.status, 200);
       assert.equal(data.status, "active");
@@ -133,7 +133,9 @@ test("premium worker proxies mobile entitlement tokens while keeping desktop tok
       if (url === `${STRIPE_API}/customers/cus_desktop_proxy_guard`) {
         return { id: "cus_desktop_proxy_guard", email: "premium@example.com" };
       }
-      if (url === `${STRIPE_API}/subscriptions?customer=cus_desktop_proxy_guard&status=all&limit=10`) {
+      if (
+        url === `${STRIPE_API}/subscriptions?customer=cus_desktop_proxy_guard&status=all&limit=10`
+      ) {
         return {
           data: [
             {
@@ -159,7 +161,7 @@ test("premium worker proxies mobile entitlement tokens while keeping desktop tok
         }),
         { ...env, MOBILE_BACKEND_ORIGIN: "https://mobile-origin.example" },
       );
-      const data = await response.json() as { status?: string; customerId?: string };
+      const data = (await response.json()) as { status?: string; customerId?: string };
 
       assert.equal(response.status, 200);
       assert.equal(data.status, "active");
@@ -194,7 +196,7 @@ test("premium worker proxies mobile AI bearer tokens to the Node backend", async
         }),
         { ...env, MOBILE_BACKEND_ORIGIN: "https://mobile-origin.example" },
       );
-      const data = await response.json() as { id?: string };
+      const data = (await response.json()) as { id?: string };
 
       assert.equal(response.status, 200);
       assert.equal(data.id, "chatcmpl_mobile");
@@ -210,18 +212,23 @@ test("premium worker returns a clear config error for mobile-only routes without
     new Request(`${WORKER_URL}/play/topup/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier: "token", packageName: "pkg", productId: "sku", purchaseToken: "purchase" }),
+      body: JSON.stringify({
+        identifier: "token",
+        packageName: "pkg",
+        productId: "sku",
+        purchaseToken: "purchase",
+      }),
     }),
     env,
   );
-  const data = await response.json() as { error?: string };
+  const data = (await response.json()) as { error?: string };
 
   assert.equal(response.status, 503);
   assert.match(data.error || "", /MOBILE_BACKEND_ORIGIN/);
 });
 
 test("premium worker verifies checkout sessions using the exact session subscription", async () => {
-  const kv = createMemoryKv();
+  const bindings = createActivationBindings();
   await withMockFetch(
     (url) => {
       if (url === `${STRIPE_API}/checkout/sessions/cs_test`) {
@@ -241,12 +248,8 @@ test("premium worker verifies checkout sessions using the exact session subscrip
       throw new Error(`Unexpected fetch: ${url}`);
     },
     async () => {
-      const response = await postJsonWithEnv(
-        "/verify",
-        { identifier: "cs_test" },
-        { ACTIVATION_KV: kv },
-      );
-      const data = await response.json() as {
+      const response = await postJsonWithEnv("/verify", { identifier: "cs_test" }, bindings);
+      const data = (await response.json()) as {
         status?: string;
         customerId?: string;
         verificationToken?: string;
@@ -263,7 +266,7 @@ test("premium worker verifies checkout sessions using the exact session subscrip
 });
 
 test("premium worker rejects replayed checkout session identifiers", async () => {
-  const kv = createMemoryKv();
+  const bindings = createActivationBindings();
   let checkoutSessionFetches = 0;
 
   await withMockFetch(
@@ -286,19 +289,11 @@ test("premium worker rejects replayed checkout session identifiers", async () =>
       throw new Error(`Unexpected fetch: ${url}`);
     },
     async () => {
-      const first = await postJsonWithEnv(
-        "/verify",
-        { identifier: "cs_replay" },
-        { ACTIVATION_KV: kv },
-      );
+      const first = await postJsonWithEnv("/verify", { identifier: "cs_replay" }, bindings);
       assert.equal(first.status, 200);
 
-      const replay = await postJsonWithEnv(
-        "/verify",
-        { identifier: "cs_replay" },
-        { ACTIVATION_KV: kv },
-      );
-      const data = await replay.json() as { error?: string };
+      const replay = await postJsonWithEnv("/verify", { identifier: "cs_replay" }, bindings);
+      const data = (await replay.json()) as { error?: string };
 
       assert.equal(replay.status, 409);
       assert.match(data.error || "", /already been redeemed/i);
@@ -337,7 +332,7 @@ test("premium worker prefers an entitled subscription over a newer canceled subs
     },
     async () => {
       const response = await postJson("/verify", { identifier: token });
-      const data = await response.json() as { status?: string };
+      const data = (await response.json()) as { status?: string };
 
       assert.equal(response.status, 200);
       assert.equal(data.status, "active");
@@ -360,15 +355,12 @@ test("premium worker creates billing portal sessions only for signed premium tok
     },
     async () => {
       const response = await postJson("/portal", { identifier: token });
-      const data = await response.json() as { url?: string };
+      const data = (await response.json()) as { url?: string };
 
       assert.equal(response.status, 200);
       assert.equal(data.url, "https://billing.stripe.test/session");
       assert.match(portalRequestBody, /customer=cus_portal/);
-      assert.match(
-        portalRequestBody,
-        /return_url=https%3A%2F%2Fpremium\.example%2Fportal-return/,
-      );
+      assert.match(portalRequestBody, /return_url=https%3A%2F%2Fpremium\.example%2Fportal-return/);
     },
   );
 });
@@ -396,7 +388,7 @@ test("premium worker returns entitlement metadata for signed tokens", async () =
     },
     async () => {
       const response = await postJson("/entitlement", { identifier: token });
-      const data = await response.json() as {
+      const data = (await response.json()) as {
         status?: string;
         plan?: string;
         usage?: { monthlyBudgetUsd?: number; remainingBudgetUsd?: number };
@@ -465,7 +457,7 @@ test("premium worker forces Vessel AI model and records successful usage", async
           OPENROUTER_API_KEY: "sk-or-test",
         },
       );
-      const data = await response.json() as { model?: string };
+      const data = (await response.json()) as { model?: string };
       const sent = JSON.parse(upstreamBody) as { model?: string; max_tokens?: number };
 
       assert.equal(response.status, 200);
@@ -478,7 +470,7 @@ test("premium worker forces Vessel AI model and records successful usage", async
         { identifier: token },
         { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
       );
-      const entitlementData = await entitlement.json() as {
+      const entitlementData = (await entitlement.json()) as {
         usage?: { requests?: number; promptTokens?: number; completionTokens?: number };
       };
       assert.equal(entitlementData.usage?.requests, 1);
@@ -509,7 +501,7 @@ test("premium worker sends feedback email through Resend", async () => {
         },
         { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
       );
-      const data = await response.json() as { ok?: boolean };
+      const data = (await response.json()) as { ok?: boolean };
 
       assert.equal(response.status, 200);
       assert.equal(data.ok, true);
@@ -531,7 +523,7 @@ test("premium worker validates feedback payloads before sending email", async ()
         email: "not-an-email",
         message: "hello",
       });
-      const data = await response.json() as { error?: string };
+      const data = (await response.json()) as { error?: string };
 
       assert.equal(response.status, 400);
       assert.match(data.error || "", /valid reply email/i);
@@ -573,7 +565,7 @@ test("premium worker rate limits feedback before sending email", async () => {
         { ACTIVATION_KV: kv, ACTIVATION_GUARD: guard },
         { "cf-connecting-ip": "203.0.113.10" },
       );
-      const data = await limitedResponse.json() as { error?: string };
+      const data = (await limitedResponse.json()) as { error?: string };
 
       assert.equal(limitedResponse.status, 429);
       assert.match(data.error || "", /too many feedback/i);
@@ -621,7 +613,7 @@ test("premium worker blocks feedback when spam guard storage fails", async () =>
           { ACTIVATION_KV: failingKv, ACTIVATION_GUARD: failingGuard },
           { "cf-connecting-ip": "203.0.113.10" },
         );
-        const data = await response.json() as { error?: string };
+        const data = (await response.json()) as { error?: string };
 
         assert.equal(response.status, 503);
         assert.match(data.error || "", /feedback submission is temporarily unavailable/i);
@@ -661,21 +653,23 @@ test("premium worker locks activation challenges after repeated invalid codes", 
         { email: "premium@example.com" },
         activationBindings,
       );
-      const startData = await start.json() as { challengeToken?: string };
+      const startData = (await start.json()) as { challengeToken?: string };
       assert.equal(start.status, 200);
       assert.match(sentCode, /^\d{6}$/);
       assert.equal(typeof startData.challengeToken, "string");
 
       const attempts = await Promise.all(
-        Array.from({ length: 6 }, () => postJsonWithEnv(
-          "/activate/verify",
-          {
-            email: "premium@example.com",
-            code: "000000" === sentCode ? "111111" : "000000",
-            challengeToken: startData.challengeToken,
-          },
-          activationBindings,
-        )),
+        Array.from({ length: 6 }, () =>
+          postJsonWithEnv(
+            "/activate/verify",
+            {
+              email: "premium@example.com",
+              code: "000000" === sentCode ? "111111" : "000000",
+              challengeToken: startData.challengeToken,
+            },
+            activationBindings,
+          ),
+        ),
       );
       assert.equal(attempts.filter((response) => response.status === 403).length, 5);
       assert.equal(attempts.filter((response) => response.status === 429).length, 1);
@@ -689,7 +683,7 @@ test("premium worker locks activation challenges after repeated invalid codes", 
         },
         activationBindings,
       );
-      const lockedData = await locked.json() as { error?: string };
+      const lockedData = (await locked.json()) as { error?: string };
 
       assert.equal(locked.status, 429);
       assert.match(lockedData.error || "", /too many verification attempts/i);
@@ -739,7 +733,7 @@ test("premium worker verifies activation codes before the attempt limit", async 
         { email: "premium@example.com" },
         activationBindings,
       );
-      const startData = await start.json() as { challengeToken?: string };
+      const startData = (await start.json()) as { challengeToken?: string };
       assert.equal(start.status, 200);
 
       const verify = await postJsonWithEnv(
@@ -751,7 +745,7 @@ test("premium worker verifies activation codes before the attempt limit", async 
         },
         activationBindings,
       );
-      const data = await verify.json() as {
+      const data = (await verify.json()) as {
         status?: string;
         verificationToken?: string;
       };
@@ -791,8 +785,7 @@ test("premium worker verifies active subscriptions for mixed-case Stripe custome
           return { data: [{ id: "cus_mixed_case", email: "Paul.H9@proton.me" }] };
         }
         if (
-          url ===
-          `${STRIPE_API}/customers/search?query=email%3A'paul.h9%40proton.me'&limit=100`
+          url === `${STRIPE_API}/customers/search?query=email%3A'paul.h9%40proton.me'&limit=100`
         ) {
           return { data: [] };
         }
@@ -824,7 +817,7 @@ test("premium worker verifies active subscriptions for mixed-case Stripe custome
           { email: "Paul.H9@proton.me" },
           activationBindings,
         );
-        const startData = await start.json() as { challengeToken?: string };
+        const startData = (await start.json()) as { challengeToken?: string };
 
         assert.equal(start.status, 200);
         assert.match(sentCode, /^\d{6}$/);
@@ -839,7 +832,7 @@ test("premium worker verifies active subscriptions for mixed-case Stripe custome
           },
           activationBindings,
         );
-        const verifyData = await verify.json() as {
+        const verifyData = (await verify.json()) as {
           status?: string;
           customerId?: string;
           verificationToken?: string;
@@ -854,7 +847,10 @@ test("premium worker verifies active subscriptions for mixed-case Stripe custome
         assert.match(logs, /activation\.verify\.completed/);
         assert.match(logs, /sub_mixed_case_active/);
         assert.doesNotMatch(logs, /Paul\.H9@proton\.me/i);
-        assert.doesNotMatch(logs, new RegExp(startData.challengeToken!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        assert.doesNotMatch(
+          logs,
+          new RegExp(startData.challengeToken!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
       },
     );
   } finally {
@@ -928,7 +924,7 @@ test("premium worker reports Stripe failures without spending valid-code attempt
           { email: "premium@example.com" },
           activationBindings,
         );
-        const startData = await start.json() as { challengeToken?: string };
+        const startData = (await start.json()) as { challengeToken?: string };
 
         for (let i = 0; i < 5; i++) {
           const failed = await postJsonWithEnv(
@@ -940,7 +936,7 @@ test("premium worker reports Stripe failures without spending valid-code attempt
             },
             activationBindings,
           );
-          const failedData = await failed.json() as { error?: string };
+          const failedData = (await failed.json()) as { error?: string };
 
           assert.equal(failed.status, 503);
           assert.match(failedData.error || "", /code was not consumed/i);
@@ -955,7 +951,7 @@ test("premium worker reports Stripe failures without spending valid-code attempt
           },
           activationBindings,
         );
-        const retriedData = await retried.json() as { status?: string };
+        const retriedData = (await retried.json()) as { status?: string };
 
         assert.equal(retried.status, 200);
         assert.equal(retriedData.status, "active");
@@ -987,10 +983,7 @@ test("premium worker finds an active subscription on a duplicate Stripe customer
       if (url === `${STRIPE_API}/customers/cus_new_canceled`) {
         return { id: "cus_new_canceled", email: "duplicate@example.com" };
       }
-      if (
-        url ===
-        `${STRIPE_API}/subscriptions?customer=cus_new_canceled&status=all&limit=10`
-      ) {
+      if (url === `${STRIPE_API}/subscriptions?customer=cus_new_canceled&status=all&limit=10`) {
         return {
           data: [
             {
@@ -1016,8 +1009,7 @@ test("premium worker finds an active subscription on a duplicate Stripe customer
         };
       }
       if (
-        url ===
-        `${STRIPE_API}/customers/search?query=email%3A'duplicate%40example.com'&limit=100`
+        url === `${STRIPE_API}/customers/search?query=email%3A'duplicate%40example.com'&limit=100`
       ) {
         return {
           data: [{ id: "cus_old_active", email: "Duplicate@Example.com" }],
@@ -1026,9 +1018,7 @@ test("premium worker finds an active subscription on a duplicate Stripe customer
       if (url === `${STRIPE_API}/customers/cus_old_active`) {
         return { id: "cus_old_active", email: "Duplicate@Example.com" };
       }
-      if (
-        url === `${STRIPE_API}/subscriptions?customer=cus_old_active&status=all&limit=10`
-      ) {
+      if (url === `${STRIPE_API}/subscriptions?customer=cus_old_active&status=all&limit=10`) {
         return {
           data: [
             {
@@ -1047,7 +1037,7 @@ test("premium worker finds an active subscription on a duplicate Stripe customer
         { email: "duplicate@example.com" },
         activationBindings,
       );
-      const startData = await start.json() as { challengeToken?: string };
+      const startData = (await start.json()) as { challengeToken?: string };
 
       const verify = await postJsonWithEnv(
         "/activate/verify",
@@ -1058,7 +1048,7 @@ test("premium worker finds an active subscription on a duplicate Stripe customer
         },
         activationBindings,
       );
-      const verifyData = await verify.json() as {
+      const verifyData = (await verify.json()) as {
         status?: string;
         customerId?: string;
       };
@@ -1091,9 +1081,7 @@ test("premium worker selects the highest entitlement across duplicate Stripe cus
       if (url === `${STRIPE_API}/customers?limit=100`) {
         return { data: customers };
       }
-      if (
-        url === `${STRIPE_API}/customers/search?query=email%3A'tiers%40example.com'&limit=100`
-      ) {
+      if (url === `${STRIPE_API}/customers/search?query=email%3A'tiers%40example.com'&limit=100`) {
         return { data: customers };
       }
       if (url === "https://api.resend.com/emails") {
@@ -1101,26 +1089,28 @@ test("premium worker selects the highest entitlement across duplicate Stripe cus
         sentCode = body.text?.match(/\b\d{6}\b/)?.[0] || "";
         return { id: "email_test" };
       }
-      if (
-        url === `${STRIPE_API}/subscriptions?customer=cus_new_starter&status=all&limit=10`
-      ) {
+      if (url === `${STRIPE_API}/subscriptions?customer=cus_new_starter&status=all&limit=10`) {
         return {
-          data: [{
-            id: "sub_starter",
-            status: "active",
-            current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
-            items: { data: [{ price: { id: "price_starter" } }] },
-          }],
+          data: [
+            {
+              id: "sub_starter",
+              status: "active",
+              current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
+              items: { data: [{ price: { id: "price_starter" } }] },
+            },
+          ],
         };
       }
       if (url === `${STRIPE_API}/subscriptions?customer=cus_old_pro&status=all&limit=10`) {
         return {
-          data: [{
-            id: "sub_pro",
-            status: "active",
-            current_period_end: nowSeconds() + 20 * 24 * 60 * 60,
-            items: { data: [{ price: { id: "price_pro" } }] },
-          }],
+          data: [
+            {
+              id: "sub_pro",
+              status: "active",
+              current_period_end: nowSeconds() + 20 * 24 * 60 * 60,
+              items: { data: [{ price: { id: "price_pro" } }] },
+            },
+          ],
         };
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -1131,7 +1121,7 @@ test("premium worker selects the highest entitlement across duplicate Stripe cus
         { email: "tiers@example.com" },
         customerEnv,
       );
-      const startData = await start.json() as { challengeToken?: string };
+      const startData = (await start.json()) as { challengeToken?: string };
 
       const verify = await postJsonWithEnv(
         "/activate/verify",
@@ -1142,7 +1132,7 @@ test("premium worker selects the highest entitlement across duplicate Stripe cus
         },
         customerEnv,
       );
-      const verifyData = await verify.json() as {
+      const verifyData = (await verify.json()) as {
         status?: string;
         customerId?: string;
         plan?: string;
