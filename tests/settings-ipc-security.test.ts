@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { ipcMain } from "electron";
 
-import { flushPersist, setSetting } from "../src/main/config/settings";
+import {
+  flushPersist,
+  getSettingsPath,
+  setSetting,
+} from "../src/main/config/settings";
 import {
   normalizeProviderEndpointOrigin,
   resolveProviderSecretForLoad,
 } from "../src/main/config/provider-secrets";
 import { registerSettingsHandlers } from "../src/main/ipc/settings";
 import { registerTrustedIpcSender } from "../src/main/ipc/common";
-import { isPremium } from "../src/main/premium/manager";
+import { isPremium, resetPremium } from "../src/main/premium/manager";
 import { Channels } from "../src/shared/channels";
 import { resolveProviderBaseUrl } from "../src/shared/providers";
 import type { PremiumState } from "../src/shared/types";
@@ -93,6 +98,27 @@ test("renderer settings IPC still accepts normal user settings", async () => {
     setSetting("telemetryEnabled", true);
     await flushPersist();
   }
+});
+
+test("premium reset is durable when its promise resolves", async () => {
+  setSetting("premium", {
+    status: "active",
+    customerId: "cus_persisted",
+    verificationToken: "token_persisted",
+    email: "premium@example.com",
+    validatedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  await flushPersist();
+
+  const state = await resetPremium();
+  const persisted = JSON.parse(fs.readFileSync(getSettingsPath(), "utf8")) as {
+    premium: PremiumState;
+  };
+
+  assert.equal(state.status, "free");
+  assert.equal(persisted.premium.status, "free");
+  assert.equal(persisted.premium.verificationToken, "");
 });
 
 test("renderer settings IPC validates supported history retention periods", async () => {

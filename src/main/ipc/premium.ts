@@ -243,10 +243,10 @@ export function registerPremiumHandlers(
     return result;
   });
 
-  ipcMain.handle(Channels.PREMIUM_RESET, (event) => {
+  ipcMain.handle(Channels.PREMIUM_RESET, async (event) => {
     assertTrustedIpcSender(event);
     trackPremiumFunnel("reset");
-    const state = resetPremium();
+    const state = await resetPremium();
     sendToRendererViews(Channels.PREMIUM_UPDATE, state);
     return state;
   });

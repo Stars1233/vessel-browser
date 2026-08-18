@@ -27,8 +27,12 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+export function getCurrentVersion(): string {
+  return app.getVersion();
+}
+
 export async function checkForUpdates(): Promise<UpdateCheckResult> {
-  const currentVersion = app.getVersion();
+  const currentVersion = getCurrentVersion();
   const checkedAt = new Date().toISOString();
 
   if (isAirGapped()) {

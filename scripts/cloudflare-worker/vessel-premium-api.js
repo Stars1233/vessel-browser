@@ -36,6 +36,7 @@ const STRIPE_API = "https://api.stripe.com/v1";
 const RESEND_API = "https://api.resend.com/emails";
 const ACTIVATION_CHALLENGE_TTL_MS = 15 * 60 * 1000;
 const PREMIUM_AUTH_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const PREMIUM_REFRESH_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const CHECKOUT_REDEMPTION_TTL_SECONDS = Math.ceil(PREMIUM_AUTH_TTL_MS / 1000);
 const CHECKOUT_REDEMPTION_CLAIM_TTL_MS = 60 * 1000;
 const CHECKOUT_GUARD_WINDOW_MS = 60 * 60 * 1000;
@@ -189,6 +190,11 @@ class StripeApiError extends Error {
 function logPremiumEvent(level, event, fields = {}) {
   const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
   logger("[Vessel Premium]", JSON.stringify({ event, ...fields }));
+}
+
+function requestClientVersion(request) {
+  const version = String(request.headers.get("x-vessel-version") || "").trim();
+  return /^[a-z0-9][a-z0-9._+-]{0,63}$/i.test(version) ? version : "unknown";
 }
 
 function stripeEndpointForLog(path) {
@@ -535,7 +541,7 @@ async function createSignedToken(env, purpose, payload) {
   return `${header}.${body}.${signature}`;
 }
 
-async function verifySignedToken(env, token, expectedPurpose) {
+async function verifySignedToken(env, token, expectedPurpose, options = {}) {
   if (typeof token !== "string") return null;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
@@ -559,7 +565,12 @@ async function verifySignedToken(env, token, expectedPurpose) {
   if (header?.purpose !== expectedPurpose) {
     return null;
   }
-  if (typeof payload?.exp !== "number" || Date.now() > payload.exp) {
+  const expirationGraceMs = Math.max(0, Number(options.expirationGraceMs) || 0);
+  if (
+    typeof payload?.exp !== "number" ||
+    !Number.isFinite(payload.exp) ||
+    Date.now() > payload.exp + expirationGraceMs
+  ) {
     return null;
   }
   return payload;
@@ -1383,6 +1394,7 @@ async function handleActivationStart(request, env) {
     activationId: nonce,
     customerId: customer?.id || "",
     codeSent: Boolean(customer?.email),
+    clientVersion: requestClientVersion(request),
   });
 
   return corsResponse(request, env, {
@@ -1470,7 +1482,10 @@ async function handleActivationVerify(request, env) {
   }
 
   const activationId = challenge.nonce || "";
-  logPremiumEvent("info", "activation.verify.code_accepted", { activationId });
+  logPremiumEvent("info", "activation.verify.code_accepted", {
+    activationId,
+    clientVersion: requestClientVersion(request),
+  });
 
   let customerResolution;
   try {
@@ -1531,6 +1546,7 @@ async function handleActivationVerify(request, env) {
     subscriptionStatus: status.status,
     entitlementStatus: active ? "active" : "free",
     challengeRedeemed: active,
+    clientVersion: requestClientVersion(request),
   });
   return corsResponse(request, env, status);
 }
@@ -1594,7 +1610,9 @@ async function handleVerify(request, env) {
     }
   }
 
-  const token = await verifySignedToken(env, identifier, "premium-access");
+  const token = await verifySignedToken(env, identifier, "premium-access", {
+    expirationGraceMs: PREMIUM_REFRESH_GRACE_MS,
+  });
   if (!token?.customerId) {
     return corsResponse(
       request,
@@ -1605,6 +1623,14 @@ async function handleVerify(request, env) {
       },
       403,
     );
+  }
+
+  if (Date.now() > token.exp) {
+    logPremiumEvent("info", "premium.verify.refresh_grace_used", {
+      customerId: token.customerId,
+      expiredByMs: Date.now() - token.exp,
+      clientVersion: requestClientVersion(request),
+    });
   }
 
   return corsResponse(
