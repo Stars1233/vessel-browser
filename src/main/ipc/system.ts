@@ -15,7 +15,11 @@ import {
   listPermissions,
   setPermissionBroadcaster,
 } from "../security/permissions";
-import { checkForUpdates, openUpdateDownload } from "../updates/checker";
+import {
+  checkForUpdates,
+  getCurrentVersion,
+  openUpdateDownload,
+} from "../updates/checker";
 import { togglePictureInPicture } from "./picture-in-picture";
 import { assertTrustedIpcSender, parseIpc, sendSafe, type SendToRendererViews } from "./common";
 import type { WindowState } from "../window";
@@ -343,6 +347,10 @@ export function registerSystemHandlers(
   ipcMain.handle(Channels.UPDATES_CHECK, (event) => {
     assertTrustedIpcSender(event);
     return checkForUpdates();
+  });
+  ipcMain.handle(Channels.UPDATES_GET_CURRENT_VERSION, (event) => {
+    assertTrustedIpcSender(event);
+    return getCurrentVersion();
   });
   ipcMain.handle(Channels.UPDATES_OPEN_DOWNLOAD, (event) => {
     assertTrustedIpcSender(event);

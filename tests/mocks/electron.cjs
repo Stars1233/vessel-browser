@@ -154,6 +154,7 @@ module.exports = {
   app: {
     getPath: (name) => path.join(os.tmpdir(), `vessel-test-${name}`),
     getAppPath: () => process.cwd(),
+    getVersion: () => "0.1.0-test",
   },
   safeStorage: {
     isEncryptionAvailable: () => encryptionAvailable,

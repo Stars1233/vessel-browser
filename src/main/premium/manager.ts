@@ -1,4 +1,5 @@
-import { loadSettings, setSetting } from "../config/settings";
+import { app } from "electron";
+import { flushPersist, loadSettings, setSetting } from "../config/settings";
 import type { PremiumState, PremiumStatus } from "../../shared/types";
 import { createLogger } from "../../shared/logger";
 import { isAirGapped } from "../config/air-gapped";
@@ -31,6 +32,13 @@ const FREE_TOOL_ITERATION_LIMIT = 50;
 const REVALIDATION_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const OFFLINE_GRACE_PERIOD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_API_ERROR_LOG_LENGTH = 300;
+
+function premiumRequestHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "X-Vessel-Version": app.getVersion(),
+  };
+}
 
 type PremiumVerificationResponse = {
   status: PremiumStatus;
@@ -145,7 +153,7 @@ export function getEffectiveMaxIterations(): number {
   return FREE_TOOL_ITERATION_LIMIT;
 }
 
-export function resetPremium(): PremiumState {
+export async function resetPremium(): Promise<PremiumState> {
   const fresh: PremiumState = {
     status: "free",
     customerId: "",
@@ -155,6 +163,7 @@ export function resetPremium(): PremiumState {
     expiresAt: "",
   };
   setSetting("premium", fresh);
+  await flushPersist();
   return fresh;
 }
 
@@ -203,7 +212,7 @@ export async function getCheckoutUrl(
 
     const res = await fetch(`${VERIFICATION_API}/checkout?${params}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: premiumRequestHeaders(),
     });
 
     if (!res.ok) {
@@ -237,7 +246,7 @@ export async function getPortalUrl(): Promise<Result<{ url: string }>> {
   try {
     const res = await fetch(`${VERIFICATION_API}/portal`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: premiumRequestHeaders(),
       body: JSON.stringify({ identifier }),
     });
 
@@ -280,7 +289,7 @@ export async function verifySubscription(
   try {
     const res = await fetch(`${VERIFICATION_API}/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: premiumRequestHeaders(),
       body: JSON.stringify({ identifier: verificationIdentifier }),
     });
 
@@ -307,6 +316,7 @@ export async function verifySubscription(
     };
 
     setSetting("premium", updated);
+    await flushPersist();
     return updated;
   } catch (err) {
     logger.warn("Verification failed:", err);
@@ -332,7 +342,7 @@ export async function requestActivationCode(
   try {
     const res = await fetch(`${VERIFICATION_API}/activate/start`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: premiumRequestHeaders(),
       body: JSON.stringify({ email: normalizedEmail }),
     });
 
@@ -385,7 +395,7 @@ export async function verifyActivationCode(
   try {
     const res = await fetch(`${VERIFICATION_API}/activate/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: premiumRequestHeaders(),
       body: JSON.stringify({
         email: normalizedEmail,
         code: trimmedCode,
@@ -414,6 +424,7 @@ export async function verifyActivationCode(
     };
 
     setSetting("premium", updated);
+    await flushPersist();
     return isPremiumActiveState(updated)
       ? okResult({ state: updated })
       : errorResult("Subscription is not active.", { state: updated });

@@ -852,6 +852,8 @@ const api = {
       ipcRenderer.invoke(Channels.SECURITY_GO_BACK_TO_SAFETY, tabId),
   },
   updates: {
+    getCurrentVersion: (): Promise<string> =>
+      ipcRenderer.invoke(Channels.UPDATES_GET_CURRENT_VERSION),
     check: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(Channels.UPDATES_CHECK),
     openDownload: (): Promise<void> => ipcRenderer.invoke(Channels.UPDATES_OPEN_DOWNLOAD),
   },

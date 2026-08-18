@@ -1,4 +1,4 @@
-import { createSignal, For, Show, type Component } from "solid-js";
+import { createSignal, For, onMount, Show, type Component } from "solid-js";
 import type { SettingsAccountProps } from "./settingsTypes";
 import { STATUS_MESSAGE_CLEAR_MS, STATUS_MESSAGE_LONG_CLEAR_MS } from "../../../../shared/ui-constants";
 
@@ -9,10 +9,18 @@ const SettingsAccount: Component<SettingsAccountProps> = (props) => {
   const [feedbackEmail, setFeedbackEmail] = createSignal(p.state().email || "");
   const [feedbackMessage, setFeedbackMessage] = createSignal("");
   const [feedbackSending, setFeedbackSending] = createSignal(false);
+  const [currentVersion, setCurrentVersion] = createSignal("");
   const [feedbackStatus, setFeedbackStatus] = createSignal<{
     kind: "success" | "error";
     text: string;
   } | null>(null);
+
+  onMount(() => {
+    void window.vessel.updates
+      .getCurrentVersion()
+      .then(setCurrentVersion)
+      .catch(() => setCurrentVersion("Unavailable"));
+  });
 
   const handleSubmitFeedback = async () => {
     setFeedbackSending(true);
@@ -42,6 +50,13 @@ const SettingsAccount: Component<SettingsAccountProps> = (props) => {
 
   return (
     <div class="settings-category-panel">
+      <div class="settings-field">
+        <label class="settings-label">Vessel</label>
+        <p class="settings-hint">
+          Version {currentVersion() || "Loading…"}
+        </p>
+      </div>
+
       {/* Support */}
       <div class="settings-field">
         <label class="settings-label">Support</label>

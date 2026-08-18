@@ -375,3 +375,73 @@ test("premium worker caps Stripe token lifetime to subscription access", async (
     },
   );
 });
+
+test("premium worker refreshes a recently expired Stripe token after renewal", async () => {
+  const expiredToken = await createSignedPremiumToken({
+    customerId: "cus_renewed",
+    email: "renewed@example.com",
+    iat: Date.now() - 31 * 24 * 60 * 60 * 1000,
+    exp: Date.now() - 60 * 1000,
+  });
+
+  await withMockFetch(
+    (url) => {
+      if (url === `${STRIPE_API}/customers/cus_renewed`) {
+        return { id: "cus_renewed", email: "renewed@example.com" };
+      }
+      if (url === `${STRIPE_API}/subscriptions?customer=cus_renewed&status=all&limit=10`) {
+        return {
+          data: [
+            {
+              id: "sub_renewed",
+              status: "active",
+              current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+    async () => {
+      const response = await postJsonWithEnv(
+        "/verify",
+        { identifier: expiredToken },
+        {},
+        { "X-Vessel-Version": "0.2.0" },
+      );
+      const data = (await response.json()) as { verificationToken?: string };
+      const payloadPart = data.verificationToken?.split(".")[1] || "";
+      const payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as {
+        exp: number;
+      };
+
+      assert.equal(response.status, 200);
+      assert.notEqual(data.verificationToken, expiredToken);
+      assert.ok(payload.exp > Date.now());
+    },
+  );
+});
+
+test("premium worker keeps recently expired tokens blocked from entitlement access", async () => {
+  const expiredToken = await createSignedPremiumToken({
+    customerId: "cus_expired_entitlement",
+    email: "expired@example.com",
+    iat: Date.now() - 31 * 24 * 60 * 60 * 1000,
+    exp: Date.now() - 60 * 1000,
+  });
+
+  const response = await postJson("/entitlement", { identifier: expiredToken });
+  assert.equal(response.status, 403);
+});
+
+test("premium worker rejects refresh tokens beyond the renewal grace period", async () => {
+  const expiredToken = await createSignedPremiumToken({
+    customerId: "cus_too_old",
+    email: "old@example.com",
+    iat: Date.now() - 40 * 24 * 60 * 60 * 1000,
+    exp: Date.now() - 8 * 24 * 60 * 60 * 1000,
+  });
+
+  const response = await postJson("/verify", { identifier: expiredToken });
+  assert.equal(response.status, 403);
+});
