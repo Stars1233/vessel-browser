@@ -142,8 +142,12 @@ export function isPremium(): boolean {
   return Date.now() - lastValidated < OFFLINE_GRACE_PERIOD_MS;
 }
 
+function redactPremiumToken(state: PremiumState): PremiumState {
+  return { ...state, verificationToken: "" };
+}
+
 export function getPremiumState(): PremiumState {
-  return { ...loadSettings().premium };
+  return redactPremiumToken(loadSettings().premium);
 }
 
 export function getEffectiveMaxIterations(): number {
@@ -275,7 +279,7 @@ export async function verifySubscription(
   identifier?: string,
 ): Promise<PremiumState> {
   if (isAirGapped()) {
-    return loadSettings().premium;
+    return getPremiumState();
   }
 
   const current = loadSettings().premium;
@@ -283,7 +287,7 @@ export async function verifySubscription(
     identifier || current.verificationToken || current.customerId;
 
   if (!verificationIdentifier) {
-    return current;
+    return redactPremiumToken(current);
   }
 
   try {
@@ -301,7 +305,7 @@ export async function verifySubscription(
         res.status,
         detail,
       );
-      return current;
+      return redactPremiumToken(current);
     }
 
     const data = (await res.json()) as PremiumVerificationResponse;
@@ -309,7 +313,7 @@ export async function verifySubscription(
     const updated: PremiumState = {
       status: data.status,
       customerId: data.customerId || current.customerId,
-      verificationToken: data.verificationToken || verificationIdentifier,
+      verificationToken: data.verificationToken || current.verificationToken,
       email: data.email || current.email,
       validatedAt: new Date().toISOString(),
       expiresAt: data.expiresAt,
@@ -317,10 +321,10 @@ export async function verifySubscription(
 
     setSetting("premium", updated);
     await flushPersist();
-    return updated;
+    return redactPremiumToken(updated);
   } catch (err) {
     logger.warn("Verification failed:", err);
-    return current;
+    return redactPremiumToken(current);
   }
 }
 
@@ -425,9 +429,10 @@ export async function verifyActivationCode(
 
     setSetting("premium", updated);
     await flushPersist();
+    const rendererState = redactPremiumToken(updated);
     return isPremiumActiveState(updated)
-      ? okResult({ state: updated })
-      : errorResult("Subscription is not active.", { state: updated });
+      ? okResult({ state: rendererState })
+      : errorResult("Subscription is not active.", { state: rendererState });
   } catch (err) {
     return errorResult(getErrorMessage(err, "Failed to verify code"), {
       state: getPremiumState(),

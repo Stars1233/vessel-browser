@@ -23,6 +23,7 @@ import {
 import { installAdBlocking } from "./network/ad-blocking";
 import { installDownloadHandler } from "./network/downloads";
 import { startBackgroundRevalidation, stopBackgroundRevalidation } from "./premium/manager";
+import { flushBeforeDispose } from "./shutdown";
 import { startTelemetry, stopTelemetry } from "./telemetry/posthog";
 import * as bookmarkManager from "./bookmarks/manager";
 import * as historyManager from "./history/manager";
@@ -396,23 +397,25 @@ app.on("window-all-closed", () => {
   globalShortcut.unregisterAll();
   stopTelemetry();
   stopBackgroundRevalidation();
-  // Dispose runtime and tab manager before persisting to free listeners and memory
-  runtime?.dispose();
-  windowStateForShutdown?.tabManager.dispose();
-  void Promise.all([
-    runtime?.flushPersist() ?? Promise.resolve(),
-    runManager?.flushPersist() ?? Promise.resolve(),
-    conversationManager?.flushPersist() ?? Promise.resolve(),
-    policyManager?.flushPersist() ?? Promise.resolve(),
-    bookmarkManager.flushPersist(),
-    historyManager.flushPersist(),
-    highlightsManager.flushPersist(),
-    autofillManager.flushPersist(),
-    pageSnapshots.flushPersist(),
-    flushSettingsPersist(),
-  ]).finally(() => {
-    void stopMcpServer().finally(() => {
-      app.quit();
+  void flushBeforeDispose(
+    [
+      runtime,
+      runManager,
+      conversationManager,
+      policyManager,
+      bookmarkManager,
+      historyManager,
+      highlightsManager,
+      autofillManager,
+      pageSnapshots,
+      { flushPersist: flushSettingsPersist },
+    ],
+    [() => runtime?.dispose(), () => windowStateForShutdown?.tabManager.dispose()],
+  )
+    .catch((err) => logger.error("Failed to flush application state during shutdown:", err))
+    .finally(() => {
+      void stopMcpServer().finally(() => {
+        app.quit();
+      });
     });
-  });
 });

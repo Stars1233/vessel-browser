@@ -28,6 +28,7 @@ import {
   rmSafe,
   unlinkIfExists,
   writeFileAtomic,
+  writeFileAtomicSync,
 } from "../src/main/utils/safe-fs";
 
 function makeTmp(label: string): string {
@@ -162,6 +163,36 @@ test("writeFileAtomic: cleans up no .tmp files on success", async () => {
 
   const remaining = fs.readdirSync(dir).filter((f) => f.includes(".tmp."));
   assert.equal(remaining.length, 0);
+});
+
+test("writeFileAtomicSync: atomically replaces private files with the requested mode", () => {
+  const dir = makeTmp("write-sync");
+  const filePath = path.join(dir, "nested", "secret.bin");
+
+  writeFileAtomicSync(filePath, Buffer.from("first"), { mode: 0o600 });
+  writeFileAtomicSync(filePath, Buffer.from("second"), { mode: 0o600 });
+
+  assert.equal(fs.readFileSync(filePath, "utf-8"), "second");
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  }
+  assert.deepEqual(fs.readdirSync(path.dirname(filePath)), ["secret.bin"]);
+});
+
+test("writeFileAtomicSync: preserves the previous file when replacement fails", () => {
+  if (process.platform === "win32") return;
+  const dir = makeTmp("write-sync-failure");
+  const filePath = path.join(dir, "secret.bin");
+  fs.writeFileSync(filePath, "good", "utf-8");
+  fs.chmodSync(dir, 0o555);
+
+  try {
+    assert.throws(() => writeFileAtomicSync(filePath, "bad", { mode: 0o600 }));
+  } finally {
+    fs.chmodSync(dir, 0o755);
+  }
+
+  assert.equal(fs.readFileSync(filePath, "utf-8"), "good");
 });
 
 test("unlinkIfExists: returns true on success", async () => {

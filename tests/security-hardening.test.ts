@@ -26,6 +26,7 @@ import {
   getPortalUrl,
   isPremium,
   verifyActivationCode,
+  verifySubscription,
 } from "../src/main/premium/manager";
 import { openUpdateDownload } from "../src/main/updates/checker";
 import { getPrivateWindows, openPrivateWindowSafely } from "../src/main/private/window";
@@ -464,6 +465,33 @@ test("secure JSON persistence retries the same snapshot after storage recovers",
   );
 });
 
+test("JSON persistence flush waits for an already-running write", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vessel-secure-inflight-"));
+  const filePath = path.join(dir, "secure.json");
+  t.after(() => {
+    setSafeStorageAvailabilityForTest(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const persist = createDebouncedJsonPersistence({
+    debounceMs: 10,
+    filePath,
+    getValue: () => ({ secret: "in-flight" }),
+    logLabel: "in-flight persistence test",
+    secure: true,
+  });
+  setSafeStorageAvailabilityForTest(false);
+
+  const inFlight = persist.persistNow();
+  const results = await Promise.allSettled([inFlight, persist.flush()]);
+  assert.deepEqual(results.map((result) => result.status), ["rejected", "rejected"]);
+  for (const result of results) {
+    if (result.status === "rejected") {
+      assert.match(String(result.reason), /Secure persistence requires OS-backed secret storage/);
+    }
+  }
+});
+
 test("JSON persistence serializes snapshots and leaves no temporary files", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vessel-json-persist-"));
   const filePath = path.join(dir, "state.json");
@@ -781,6 +809,38 @@ test("premium billing portal requires a stored verification token", async () => 
         assert.match(result.error || "", /Verify your Premium subscription/);
       },
     );
+  } finally {
+    setPremiumStatusForTest("free", "");
+    await flushPersist();
+  }
+});
+
+test("checkout identifiers are never persisted as Premium verification tokens", async () => {
+  try {
+    setPremiumStatusForTest("free", "");
+    const result = await withMockFetch(
+      async (_input, init) => {
+        assert.deepEqual(JSON.parse(String(init?.body || "{}")), {
+          identifier: "cs_checkout_session",
+        });
+        return new Response(
+          JSON.stringify({
+            status: "active",
+            customerId: "cus_verified",
+            email: "premium@example.com",
+            expiresAt: "",
+          }),
+          { status: 200 },
+        );
+      },
+      () => verifySubscription("cs_checkout_session"),
+    );
+
+    assert.equal(result.status, "active");
+    assert.equal(result.verificationToken, "");
+    const portal = await getPortalUrl();
+    assert.equal(portal.ok, false);
+    assert.match(portal.error || "", /Verify your Premium subscription/);
   } finally {
     setPremiumStatusForTest("free", "");
     await flushPersist();

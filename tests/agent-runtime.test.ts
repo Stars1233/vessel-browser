@@ -8,6 +8,7 @@ import { AgentRuntime, type AgentRuntimeActionLifecycleEvent } from "../src/main
 import { executeAction } from "../src/main/ai/page-actions/orchestrator";
 import { setSetting } from "../src/main/config/settings";
 import { PolicyManager } from "../src/main/policy/manager";
+import { flushBeforeDispose } from "../src/main/shutdown";
 import type { TabGroupColor } from "../src/shared/types";
 import type { SessionSnapshot } from "../src/shared/types";
 
@@ -33,6 +34,101 @@ test("updateCheckpointNote updates the matching checkpoint by id", async () => {
   assert.equal(updated.id, checkpoint.id);
   assert.equal(updated.note, "new note");
   assert.equal(runtime.getState().checkpoints[0]?.note, "new note");
+});
+
+test("shutdown flushes runtime actions before dispose clears in-memory state", async () => {
+  const statePath = path.join(app.getPath("userData"), "vessel-agent-runtime.json");
+  await fs.rm(statePath, { force: true });
+  const runtime = makeRuntime();
+
+  await runtime.runControlledAction({
+    source: "ai",
+    name: "read_page",
+    executor: async () => "persisted action",
+  });
+
+  await flushBeforeDispose([runtime], [() => runtime.dispose()]);
+
+  const persisted = JSON.parse(await fs.readFile(statePath, "utf-8")) as {
+    actions: Array<{ name: string; status: string }>;
+  };
+  assert.deepEqual(
+    persisted.actions.map(({ name, status }) => ({ name, status })),
+    [{ name: "read_page", status: "completed" }],
+  );
+  assert.equal(runtime.getState().actions.length, 0);
+  await fs.rm(statePath, { force: true });
+});
+
+test("flushBeforeDispose waits for every flush before disposing", async () => {
+  const events: string[] = [];
+  let releaseFlush: (() => void) | undefined;
+  const pendingFlush = new Promise<void>((resolve) => {
+    releaseFlush = resolve;
+  });
+
+  const shutdown = flushBeforeDispose(
+    [{ flushPersist: async () => { events.push("flush"); await pendingFlush; } }],
+    [() => events.push("dispose")],
+  );
+  await Promise.resolve();
+  assert.deepEqual(events, ["flush"]);
+
+  releaseFlush?.();
+  await shutdown;
+  assert.deepEqual(events, ["flush", "dispose"]);
+});
+
+test("flushBeforeDispose waits for remaining flushes after one rejects", async () => {
+  const events: string[] = [];
+  let releaseFlush: (() => void) | undefined;
+  const pendingFlush = new Promise<void>((resolve) => {
+    releaseFlush = resolve;
+  });
+
+  const shutdown = flushBeforeDispose(
+    [
+      { flushPersist: async () => { throw new Error("save failed"); } },
+      { flushPersist: async () => { events.push("slow flush"); await pendingFlush; } },
+    ],
+    [() => events.push("dispose")],
+  );
+  await Promise.resolve();
+  assert.deepEqual(events, ["slow flush"]);
+
+  releaseFlush?.();
+  await assert.rejects(shutdown, /save failed/);
+  assert.deepEqual(events, ["slow flush", "dispose"]);
+});
+
+test("overlapping runtime snapshots finish in revision order", async () => {
+  const statePath = path.join(app.getPath("userData"), "vessel-agent-runtime.json");
+  await fs.rm(statePath, { force: true });
+  const runtime = makeRuntime();
+
+  await runtime.runControlledAction({
+    source: "ai",
+    name: "first_action",
+    executor: async () => "first",
+  });
+  const firstWrite = runtime.flushPersist();
+  await runtime.runControlledAction({
+    source: "ai",
+    name: "second_action",
+    executor: async () => "second",
+  });
+  const secondWrite = runtime.flushPersist();
+  await Promise.all([firstWrite, secondWrite]);
+
+  const persisted = JSON.parse(await fs.readFile(statePath, "utf-8")) as {
+    actions: Array<{ name: string }>;
+  };
+  assert.deepEqual(persisted.actions.map((action) => action.name), [
+    "first_action",
+    "second_action",
+  ]);
+  runtime.dispose();
+  await fs.rm(statePath, { force: true });
 });
 
 test("auto approval mode bypasses explicitly approval-gated actions", async () => {

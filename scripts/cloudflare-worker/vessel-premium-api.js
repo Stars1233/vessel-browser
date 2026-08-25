@@ -418,10 +418,11 @@ async function getSubscriptionById(env, subscriptionId) {
 
 function subscriptionAccessEndsAt(sub) {
   if (!sub) return 0;
+  const itemCurrentPeriodEnd = sub.items?.data?.[0]?.current_period_end || 0;
   if (sub.status === "trialing") {
-    return sub.trial_end || sub.current_period_end || 0;
+    return sub.trial_end || sub.current_period_end || itemCurrentPeriodEnd;
   }
-  return sub.current_period_end || sub.trial_end || 0;
+  return sub.current_period_end || itemCurrentPeriodEnd || sub.trial_end || 0;
 }
 
 function isEntitledSubscription(sub, now = Math.floor(Date.now() / 1000)) {
@@ -1027,9 +1028,7 @@ async function buildPremiumStatusForCustomer(
       authTokenTtlMsForExpiry(accessEndsAt ? new Date(accessEndsAt * 1000).toISOString() : ""),
     ),
     email: customer.email || fallbackEmail,
-    expiresAt: subscription?.current_period_end
-      ? new Date(subscription.current_period_end * 1000).toISOString()
-      : "",
+    expiresAt: accessEndsAt ? new Date(accessEndsAt * 1000).toISOString() : "",
     plan,
     planLabel: planConfig(plan).label,
     source: "stripe",

@@ -691,9 +691,10 @@ test("premium worker locks activation challenges after repeated invalid codes", 
   );
 });
 
-test("premium worker verifies activation codes before the attempt limit", async () => {
+test("premium worker verifies activation codes after a trial rolls into an item billing period", async () => {
   const activationBindings = createActivationBindings();
   let sentCode = "";
+  const renewalEndsAt = nowSeconds() + 30 * 24 * 60 * 60;
 
   await withMockFetch(
     (url, init) => {
@@ -720,7 +721,10 @@ test("premium worker verifies activation codes before the attempt limit", async 
             {
               id: "sub_active",
               status: "active",
-              current_period_end: nowSeconds() + 30 * 24 * 60 * 60,
+              trial_end: nowSeconds() - 10 * 24 * 60 * 60,
+              items: {
+                data: [{ current_period_end: renewalEndsAt }],
+              },
             },
           ],
         };
@@ -748,11 +752,19 @@ test("premium worker verifies activation codes before the attempt limit", async 
       const data = (await verify.json()) as {
         status?: string;
         verificationToken?: string;
+        expiresAt?: string;
       };
 
       assert.equal(verify.status, 200);
       assert.equal(data.status, "active");
       assert.match(data.verificationToken || "", /^[^.]+\.[^.]+\.[^.]+$/);
+      assert.equal(data.expiresAt, new Date(renewalEndsAt * 1000).toISOString());
+      const payloadPart = data.verificationToken?.split(".")[1] || "";
+      const payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as {
+        exp: number;
+      };
+      assert.ok(payload.exp <= renewalEndsAt * 1000);
+      assert.ok(payload.exp > Date.now());
 
       const replay = await postJsonWithEnv(
         "/activate/verify",
