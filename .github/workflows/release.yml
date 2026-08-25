@@ -314,6 +314,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -374,8 +375,6 @@ jobs:
         run: corepack npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: corepack npm publish --access public
 
       - name: Publish GitHub release
