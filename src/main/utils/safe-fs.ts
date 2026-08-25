@@ -20,6 +20,16 @@
 
 import { randomBytes } from "node:crypto";
 import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import {
   access,
   constants,
   mkdir,
@@ -133,6 +143,57 @@ export async function writeFileAtomic(
   }
 
   return tmpPath;
+}
+
+/**
+ * Synchronous counterpart for main-process secrets whose public APIs are
+ * intentionally synchronous. Writes and fsyncs a sibling temp file before
+ * atomically replacing the destination.
+ */
+export function writeFileAtomicSync(
+  filePath: string,
+  data: string | Buffer,
+  options: WriteFileOptions = {},
+): string {
+  const { mode, enforceMode, ensureParentDir = true } = options;
+
+  if (ensureParentDir) {
+    mkdirSync(dirname(filePath), { recursive: true });
+  }
+
+  const tmpPath = `${filePath}.tmp.${randomBytes(6).toString("hex")}`;
+  let fd: number | null = null;
+  try {
+    writeFileSync(tmpPath, data, { flag: "w", mode });
+    fd = openSync(tmpPath, "r+");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tmpPath, filePath);
+
+    if (mode != null && (enforceMode ?? true)) {
+      try {
+        chmodSync(filePath, mode);
+      } catch {
+        // Non-POSIX filesystems (e.g. Windows) may not support chmod.
+      }
+    }
+    return tmpPath;
+  } catch (err) {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Preserve the original write error.
+      }
+    }
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // The temp file may not have been created or may already be renamed.
+    }
+    throw err;
+  }
 }
 
 /**

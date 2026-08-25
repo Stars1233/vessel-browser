@@ -107,11 +107,15 @@ export function createDebouncedJsonPersistence<T>({
       saveTimer = null;
     }
 
-    const value = getValue();
-    if (value == null) return;
-
-    const payload = JSON.stringify(serialize ? serialize(value) : value, null, 2);
-    const data = encodeStoredData(payload, secure);
+    let prepared: { data: Buffer | string } | { error: unknown };
+    try {
+      const value = getValue();
+      if (value == null) return writeChain;
+      const payload = JSON.stringify(serialize ? serialize(value) : value, null, 2);
+      prepared = { data: encodeStoredData(payload, secure) };
+    } catch (error) {
+      prepared = { error };
+    }
 
     writeChain = writeChain
       .catch(() => {
@@ -119,7 +123,8 @@ export function createDebouncedJsonPersistence<T>({
       })
       .then(async () => {
         try {
-          await writeFileAtomic(filePath, data, { mode: 0o600 });
+          if ("error" in prepared) throw prepared.error;
+          await writeFileAtomic(filePath, prepared.data, { mode: 0o600 });
         } catch (err) {
           logger.error(`Failed to save ${logLabel}:`, err);
           throw err;
@@ -145,7 +150,7 @@ export function createDebouncedJsonPersistence<T>({
   };
 
   const flush = (): Promise<void> => {
-    return saveDirty ? persistNow() : Promise.resolve();
+    return saveDirty ? persistNow() : writeChain;
   };
 
   return {

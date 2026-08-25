@@ -21,6 +21,9 @@ import type { WebContents } from "electron";
 import type { AgentRuntime } from "../agent/runtime";
 import { buildOrchestratorSystemPrompt } from "../agent/research/orchestrator-prompt";
 import type { ResearchOrchestrator } from "../agent/research/orchestrator";
+import { createLogger } from "../../shared/logger";
+
+const logger = createLogger("AICommands");
 
 export async function handleAIQuery(
   query: string,
@@ -81,6 +84,7 @@ export async function handleAIQuery(
 
   // Use agent path when provider supports tools and we have a tab manager
   if (provider.streamAgentQuery && tabManager && activeWebContents && runtime) {
+    let agentLoopStarted = false;
     try {
       const pageContent = await extractContent(activeWebContents);
       const pageType = detectPageType(pageContent);
@@ -196,6 +200,7 @@ export async function handleAIQuery(
         return output;
       };
 
+      agentLoopStarted = true;
       await provider.streamAgentQuery(
         systemPrompt,
         query,
@@ -206,8 +211,12 @@ export async function handleAIQuery(
         history,
       );
       return;
-    } catch {
-      // Fall through to simple path on error
+    } catch (err) {
+      if (agentLoopStarted) {
+        logger.error("Agent query failed after the tool loop started; fallback suppressed:", err);
+        throw err;
+      }
+      logger.warn("Agent query setup failed; falling back to the simple query path:", err);
     }
   }
 
@@ -223,7 +232,8 @@ export async function handleAIQuery(
       } else {
         prompt = buildQuestionPrompt(pageContent, query);
       }
-    } catch {
+    } catch (err) {
+      logger.warn("Page context extraction failed; using a general prompt:", err);
       prompt = buildGeneralPrompt(query);
     }
   } else {

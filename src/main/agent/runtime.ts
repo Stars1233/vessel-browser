@@ -3,6 +3,7 @@ import path from "node:path";
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
 import { createLogger } from "../../shared/logger";
+import { writeFileAtomic } from "../utils/safe-fs";
 import type {
   ActionSource,
   ActionStatus,
@@ -823,6 +824,7 @@ export class AgentRuntime {
 
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistDirty = false;
+  private persistWriteChain: Promise<void> = Promise.resolve();
 
   private persistNow(): Promise<void> {
     this.persistDirty = false;
@@ -842,12 +844,15 @@ export class AgentRuntime {
       taskMemory: this.state.taskMemory,
     };
 
-    return fs.promises
-      .mkdir(path.dirname(getRuntimeStatePath()), { recursive: true })
-      .then(() =>
-        fs.promises.writeFile(getRuntimeStatePath(), JSON.stringify(persisted, null, 2), "utf-8"),
-      )
+    const payload = JSON.stringify(persisted, null, 2);
+    this.persistWriteChain = this.persistWriteChain
+      .catch(() => {
+        // A failed snapshot must not prevent a newer one from being attempted.
+      })
+      .then(() => writeFileAtomic(getRuntimeStatePath(), payload, { mode: 0o600 }))
+      .then(() => undefined)
       .catch((err) => logger.error("Failed to persist runtime state:", err));
+    return this.persistWriteChain;
   }
 
   private schedulePersist(): void {
@@ -861,7 +866,7 @@ export class AgentRuntime {
 
   /** Flush any pending debounced persist to disk immediately. Call on shutdown. */
   flushPersist(): Promise<void> {
-    return this.persistDirty ? this.persistNow() : Promise.resolve();
+    return this.persistDirty ? this.persistNow() : this.persistWriteChain;
   }
 
   private emit(): void {
