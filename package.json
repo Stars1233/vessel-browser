@@ -46,7 +46,7 @@
     "lint:fix": "eslint src/ tests/ eslint.config.mjs --config eslint.config.mjs --fix",
     "format": "prettier --write \"src/main/ai/page-actions/**/*.ts\" \".prettierrc\" \"eslint.config.mjs\"",
     "format:check": "prettier --check \"src/main/ai/page-actions/**/*.ts\" \".prettierrc\" \"eslint.config.mjs\"",
-    "test:navigation-regression": "env -u ELECTRON_RUN_AS_NODE ELECTRON_DISABLE_SANDBOX=1 electron --no-sandbox --disable-setuid-sandbox scripts/run-navigation-regression.mjs",
+    "test:navigation-regression": "node scripts/run-navigation-regression.mjs",
     "test:mcp-proxy": "node scripts/test-mcp-stdio-proxy.mjs",
     "smoke:test": "node scripts/smoke-test.mjs",
     "test": "npm run test:coverage",

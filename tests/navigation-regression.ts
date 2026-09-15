@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 
-import { app, BaseWindow, ipcMain } from "electron";
+import { app, BaseWindow, ipcMain, type WebContents } from "electron";
 
 import { buildScopedContext } from "../src/main/ai/context-builder";
-import { extractContent } from "../src/main/content/extractor";
+import { extractContent, invalidateExtractionCache } from "../src/main/content/extractor";
 // eslint-disable-next-line no-restricted-syntax -- clickElementBySelector, executeAction, searchPage are defined in page-actions.ts itself; not yet extracted to sub-modules
 import { clickElementBySelector, executeAction, searchPage } from "../src/main/ai/page-actions";
 import { clearOverlays, dismissPopup } from "../src/main/ai/page-actions/overlays";
@@ -19,6 +19,7 @@ import { waitForLoad } from "../src/main/utils/webcontents-utils";
 import {
   capturePageSnapshot,
   schedulePageSnapshotCapture,
+  notePageMutationActivity,
 } from "../src/main/content/page-diff-monitor";
 import { Tab } from "../src/main/tabs/tab";
 import { Channels } from "../src/shared/channels";
@@ -50,11 +51,21 @@ async function withTab(
   });
   window.contentView.addChildView(tab.view);
   tab.view.setBounds({ x: 0, y: 0, width: 1280, height: 900 });
+  // Mutation observation intentionally pauses for hidden documents.
+  window.show();
+  tab.view.webContents.focus();
+  const onContentChanged = (event: Electron.IpcMainEvent) => {
+    if (event.sender === tab.view.webContents) invalidateExtractionCache(event.sender);
+  };
+  ipcMain.on(Channels.PAGE_DIFF_ACTIVITY, onContentChanged);
+  ipcMain.on(Channels.PAGE_DIFF_DIRTY, onContentChanged);
 
   try {
     await waitForLoad(tab.view.webContents, 8000);
     await run(tab, window, openedUrls);
   } finally {
+    ipcMain.removeListener(Channels.PAGE_DIFF_ACTIVITY, onContentChanged);
+    ipcMain.removeListener(Channels.PAGE_DIFF_DIRTY, onContentChanged);
     try {
       window.contentView.removeChildView(tab.view);
     } catch {
@@ -65,13 +76,42 @@ async function withTab(
   }
 }
 
+const scenarioFailures: Error[] = [];
+
+function observePageDiff(wc: WebContents, send: (channel: string, diff: unknown) => void): () => void {
+  const onActivity = (event: Electron.IpcMainEvent) => {
+    if (event.sender !== wc) return;
+    invalidateExtractionCache(wc);
+    notePageMutationActivity(wc, send);
+  };
+  const onDirty = (event: Electron.IpcMainEvent) => {
+    if (event.sender !== wc) return;
+    invalidateExtractionCache(wc);
+    schedulePageSnapshotCapture(wc, send);
+  };
+  // Mirror both production IPC events: activity postpones pending captures,
+  // while dirty schedules a capture of fresh content after the mutation burst.
+  ipcMain.on(Channels.PAGE_DIFF_ACTIVITY, onActivity);
+  ipcMain.on(Channels.PAGE_DIFF_DIRTY, onDirty);
+  return () => {
+    ipcMain.removeListener(Channels.PAGE_DIFF_ACTIVITY, onActivity);
+    ipcMain.removeListener(Channels.PAGE_DIFF_DIRTY, onDirty);
+  };
+}
+
 async function runScenario(
   name: string,
   scenario: () => Promise<void>,
 ): Promise<void> {
   process.stdout.write(`- ${name}... `);
-  await scenario();
-  process.stdout.write("ok\n");
+  try {
+    await scenario();
+    process.stdout.write("ok\n");
+  } catch (cause) {
+    const error = new Error(name, { cause });
+    scenarioFailures.push(error);
+    console.error("FAILED", error);
+  }
 }
 
 async function waitForCondition(
@@ -94,13 +134,16 @@ function buildActionContextForTab(tab: Tab): Parameters<typeof executeAction>[2]
       switchTab: () => true,
     },
     runtime: {
+      getFlowContext: () => "",
+      getState: () => ({}),
       runControlledAction: async (input: { executor: () => Promise<string> }) =>
         input.executor(),
     },
   } as Parameters<typeof executeAction>[2];
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<number> {
+  scenarioFailures.length = 0;
   const harness = await createNavigationHarnessServer();
   const completedScenarios: string[] = [];
   await app.whenReady();
@@ -428,6 +471,11 @@ async function main(): Promise<void> {
           const page = await extractContent(wc);
           const context = buildScopedContext(page, "visible_only");
 
+          assert.equal(
+            page.interactiveElements.find((el) => el.selector === "#background-add-to-cart")?.context,
+            "main",
+            "background controls must retain their normal context",
+          );
           assert.match(context, /### Immediate Overlay Actions/);
           assert.match(
             context,
@@ -709,14 +757,9 @@ async function main(): Promise<void> {
           const wc = tab.view.webContents;
           const events: Array<{ channel: string; diff: unknown; at: number }> = [];
 
-          const onDirty = (event: Electron.IpcMainEvent) => {
-            if (event.sender !== wc) return;
-            schedulePageSnapshotCapture(wc, (channel, diff) => {
-              events.push({ channel, diff, at: Date.now() });
-            });
-          };
-
-          ipcMain.on(Channels.PAGE_DIFF_DIRTY, onDirty);
+          const stopObserving = observePageDiff(wc, (channel, diff) => {
+            events.push({ channel, diff, at: Date.now() });
+          });
           try {
             await capturePageSnapshot(wc.getURL(), wc, (channel, diff) => {
               events.push({ channel, diff, at: Date.now() });
@@ -766,7 +809,7 @@ async function main(): Promise<void> {
             assert.ok(contentChange, `expected content diff, got: ${JSON.stringify(diff)}`);
             assert.match(contentChange?.after || "", /phase 3/);
           } finally {
-            ipcMain.removeListener(Channels.PAGE_DIFF_DIRTY, onDirty);
+            stopObserving();
           }
         });
       },
@@ -782,14 +825,9 @@ async function main(): Promise<void> {
           const wc = tab.view.webContents;
           const events: Array<{ channel: string; diff: unknown }> = [];
 
-          const onDirty = (event: Electron.IpcMainEvent) => {
-            if (event.sender !== wc) return;
-            schedulePageSnapshotCapture(wc, (channel, diff) => {
-              events.push({ channel, diff });
-            });
-          };
-
-          ipcMain.on(Channels.PAGE_DIFF_DIRTY, onDirty);
+          const stopObserving = observePageDiff(wc, (channel, diff) => {
+            events.push({ channel, diff });
+          });
           try {
             await capturePageSnapshot(wc.getURL(), wc, (channel, diff) => {
               events.push({ channel, diff });
@@ -817,11 +855,11 @@ async function main(): Promise<void> {
             assert.ok(latest.lastDetectedAt, "expected lastDetectedAt");
             assert.equal(latest.recentBursts?.length, 2);
             assert.match(
-              latest.recentBursts?.[0]?.summary || "",
+              latest.recentBursts?.[1]?.summary || "",
               /title: "burst-history-page" → "burst-history-page-1"/,
             );
             assert.match(
-              latest.recentBursts?.[1]?.summary || "",
+              latest.recentBursts?.[0]?.summary || "",
               /title: "burst-history-page-1" → "burst-history-page-2"/,
             );
 
@@ -830,7 +868,7 @@ async function main(): Promise<void> {
             );
             assert.equal(titleChange?.after, "burst-history-page-2");
           } finally {
-            ipcMain.removeListener(Channels.PAGE_DIFF_DIRTY, onDirty);
+            stopObserving();
           }
         });
       },
@@ -846,14 +884,9 @@ async function main(): Promise<void> {
           const wc = tab.view.webContents;
           const events: Array<{ channel: string; diff: unknown }> = [];
 
-          const onDirty = (event: Electron.IpcMainEvent) => {
-            if (event.sender !== wc) return;
-            schedulePageSnapshotCapture(wc, (channel, diff) => {
-              events.push({ channel, diff });
-            });
-          };
-
-          ipcMain.on(Channels.PAGE_DIFF_DIRTY, onDirty);
+          const stopObserving = observePageDiff(wc, (channel, diff) => {
+            events.push({ channel, diff });
+          });
           try {
             await capturePageSnapshot(wc.getURL(), wc, (channel, diff) => {
               events.push({ channel, diff });
@@ -888,7 +921,7 @@ async function main(): Promise<void> {
             assert.match(contentChange?.before || "", /idle/);
             assert.match(contentChange?.after || "", /updated/);
           } finally {
-            ipcMain.removeListener(Channels.PAGE_DIFF_DIRTY, onDirty);
+            stopObserving();
           }
         });
       },
@@ -913,10 +946,10 @@ async function main(): Promise<void> {
 
             assert.match(result, /Pressed key: Enter/);
             await waitForLoad(wc, 8000);
-            assert.equal(
-              wc.getURL(),
-              `${harness.baseUrl}/trusted-enter-result?q=rtx+4060+ti`,
-            );
+            const destination = new URL(wc.getURL());
+            assert.equal(destination.origin, harness.baseUrl);
+            assert.equal(destination.pathname, "/trusted-enter-result");
+            assert.equal(destination.searchParams.get("q"), "rtx 4060 ti");
           },
         );
       },
@@ -1053,7 +1086,11 @@ async function main(): Promise<void> {
             "document.getElementById('language-state')?.textContent || ''",
           );
 
-          assert.match(result, /Dismissed popup using "No thanks"/);
+          assert.match(result, /Dismissed popup using "Close dialog"/);
+          assert.equal(
+            await wc.executeJavaScript("Boolean(document.getElementById('language-modal'))"),
+            false,
+          );
           assert.equal(lang, "en");
           assert.equal(state, "English storefront");
         });
@@ -1114,23 +1151,14 @@ async function main(): Promise<void> {
       "accept_cookies verifies ambiguous consent banners are actually dismissed",
     );
 
+    if (scenarioFailures.length > 0) {
+      throw new AggregateError(scenarioFailures, `${scenarioFailures.length} of ${completedScenarios.length} navigation scenarios failed`);
+    }
     console.log(
       `\nNavigation regression suite passed against ${harness.baseUrl}\nScenarios: ${completedScenarios.join("; ")}`,
     );
+    return completedScenarios.length;
   } finally {
     await harness.close();
   }
 }
-
-main()
-  .then(async () => {
-    process.exitCode = 0;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    app.quit();
-  })
-  .catch((error) => {
-    console.error("\nNavigation regression suite failed.");
-    console.error(error);
-    process.exitCode = 1;
-    app.quit();
-  });

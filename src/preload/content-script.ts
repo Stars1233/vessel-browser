@@ -894,6 +894,11 @@ function isElementDisabled(el: Element): boolean {
 }
 
 function getElementContext(el: Element): string {
+  // Detected drawers and overlays can be built from ordinary aside/form elements.
+  if (activeOverlays.some((overlay) => overlay.blocksInteraction && overlay.element.contains(el))) {
+    return "dialog";
+  }
+
   let parent = el.parentElement;
   while (parent) {
     const tag = parent.tagName.toLowerCase();

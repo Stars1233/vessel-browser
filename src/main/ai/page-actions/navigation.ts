@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { randomUUID } from "node:crypto";
 import type { AgentCheckpoint } from "../../../shared/types";
 import { selectorHelpersJS } from "../../../shared/dom/selector-helpers-js";
 import type { TabManager } from "../../tabs/tab-manager";
@@ -319,11 +320,50 @@ export async function clickResolvedSelector(wc: WebContents, selector: string): 
   const tagLabel =
     elInfo.tag && elInfo.tag !== "a" && elInfo.tag !== "button" ? ` <${elInfo.tag}>` : "";
   const clickText = `Clicked: ${elInfo.text}${tagLabel}`;
-  const clickResult = await clickElement(wc, selector);
+  // Track actual activation: sending pointer events alone does not prove that
+  // the target received them (for example, during lazy layout changes).
+  const deliveryKey = `__vesselClick_${randomUUID()}`;
+  await executePageScript(
+    wc,
+    `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return;
+    const key = ${JSON.stringify(deliveryKey)};
+    const state = { delivered: false, dispose: null };
+    const onClick = () => { state.delivered = true; };
+    const timer = setTimeout(() => state.dispose(), 10000);
+    state.dispose = () => {
+      el.removeEventListener("click", onClick, true);
+      clearTimeout(timer);
+      delete window[key];
+    };
+    el.addEventListener("click", onClick, { capture: true, once: true });
+    window[key] = state;
+  })()`,
+    { label: "observe click delivery" },
+  );
+  let clickResult: string;
+  let activationDelivered = false;
+  try {
+    clickResult = await clickElement(wc, selector);
+  } finally {
+    const delivered = await executePageScript(
+      wc,
+      `(() => {
+      const state = window[${JSON.stringify(deliveryKey)}];
+      if (!state) return false;
+      const delivered = state.delivered;
+      state.dispose();
+      return delivered;
+    })()`,
+      { label: "read click delivery" },
+    );
+    activationDelivered = delivered === true;
+  }
   if (clickResult.startsWith("Error:")) return clickResult;
 
   const initialNavigationWaitMs =
-    /DOM activation/i.test(clickResult) && !elInfo.href ? 800 : undefined;
+    (activationDelivered || /DOM activation/i.test(clickResult)) && !elInfo.href ? 800 : undefined;
   await waitForPotentialNavigation(wc, beforeUrl, initialNavigationWaitMs);
   const afterUrl = wc.getURL();
   if (afterUrl !== beforeUrl) {
@@ -358,7 +398,12 @@ export async function clickResolvedSelector(wc: WebContents, selector: string): 
     return `${clickText} (${clickResult})${await buildCartSuccessSuffix(wc, beforeUrl)}`;
   }
 
-  if (/DOM activation/i.test(clickResult) && (!elInfo.href || elInfo.target === "_blank")) {
+  // A delivered click need not navigate this tab (buttons and new-tab links).
+  // Re-activation would repeat its side effect; preserve fallback for missed clicks.
+  if (
+    (activationDelivered || /DOM activation/i.test(clickResult)) &&
+    (!elInfo.href || /^_blank$/i.test(elInfo.target?.trim() || ""))
+  ) {
     return `${clickText} (${clickResult})`;
   }
 
