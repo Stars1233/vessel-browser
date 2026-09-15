@@ -514,7 +514,8 @@ export async function createNavigationHarnessServer(): Promise<NavigationHarness
 	                  document.title = titleBase + '-' + (step + 1);
 	                  step += 1;
 	                  if (step < updates.length) {
-	                    setTimeout(run, 1600);
+	                    // Between the 1200ms preload debounce and 1500ms main settle window.
+                    setTimeout(run, 1400);
 	                  }
 	                };
 	                run();
@@ -907,6 +908,7 @@ export async function createNavigationHarnessServer(): Promise<NavigationHarness
               document.getElementById('blocked-search-input')?.addEventListener('keydown', (event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
+                  document.getElementById('status').textContent = 'submit-blocked';
                 }
               });
             </script>

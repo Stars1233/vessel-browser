@@ -85,6 +85,8 @@ Notes:
 - signed macOS packages are not notarized by default in this repo
 - the tracked smoke test runs typecheck, build, the MCP stdio proxy regression check, and the Electron navigation regression harness
 - for headless CI, run the smoke test under `xvfb-run -a npm run smoke:test`
+- run `npm run test:navigation-regression` for the standalone navigation suite; it builds fresh test/preload bundles, opens focused test windows, and uses a temporary profile and loopback server
+- the navigation runner requires a completed-suite report as well as a zero exit, times out after three minutes, and removes its temporary files on normal completion or failure
 
 ## Helper Commands
 
